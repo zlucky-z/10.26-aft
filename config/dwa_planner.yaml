@@ -1,0 +1,544 @@
+# 模块功能：DWA节点全部运行参数；修改算法阈值、车体尺寸、雷达安装位或安全策略时优先查看此文件。
+# 修改提示：本文件只负责上述职责，修改参数或流程时先确认上下游接口。
+dwa_local_planner:
+  ros__parameters:
+    # 左右滤波雷达先在融合节点中转到 base_link；DWA 只读取最终融合点云。
+    fused_cloud_topic: /dwa/fused_scan_base # base_link 下的统一融合点云
+    # 控制器原始意图话题。控制器不推时 DWA 不应主动前进。
+    cmd_vel_raw_topic: /cmd_vel_raw # 控制器发布的原始速度意图话题
+    # 电机桥反馈原始手柄XY和轮速；静止起步只读取其中的原始Y值。
+    motor_feedback_topic: /dwa/motor_feedback # 电机桥发布的原始手柄和轮速反馈话题
+    # 规划节点向电机桥发布霍尔闭环开关、目标速度和控制阶段。
+    hall_speed_control_topic: /dwa/hall_speed_control # DWA向电机桥发布霍尔速度控制状态的话题
+    # 轮速/里程计话题。当前没有稳定 odom 时，DWA 会用控制器意图近似当前速度。
+    odom_topic: /odom # 里程计话题，用于获取当前运动速度
+    # DWA 输出候选速度，电机桥读取这个话题。
+    output_topic: /dwa/cmd_vel_candidate # DWA向电机桥发布候选速度的话题
+    # 车体坐标系。所有左右雷达点都会转换到这个坐标系后再参与规划。
+    frame_id: base_link # DWA使用的车体坐标系名称
+
+    # 左雷达安装位置，单位 m/rad。x 为车头方向，y 为左侧方向。
+    left_laser_x: 0.545 # 左雷达相对车体原点的前后安装位置，单位m
+    left_laser_y: 0.290 # 左雷达相对车体原点的左右安装位置，单位m
+    left_laser_yaw: -1.5707963267948966 # 左雷达相对车体坐标系的安装偏航角，单位rad
+    left_laser_angle_reversed: false # 左雷达扫描角度顺序是否需要反向
+    left_laser_angle_offset_deg: 0.0 # 左雷达扫描零角度修正，单位deg
+    # 右雷达安装位置，单位 m/rad。y 为负数表示右侧。
+    right_laser_x: 0.545 # 右雷达相对车体原点的前后安装位置，单位m
+    right_laser_y: -0.290 # 右雷达相对车体原点的左右安装位置，单位m
+    right_laser_yaw: 1.5707963267948966 # 右雷达相对车体坐标系的安装偏航角，单位rad
+    right_laser_angle_reversed: false # 右雷达扫描角度顺序是否需要反向
+    right_laser_angle_offset_deg: 0.0 # 右雷达扫描零角度修正，单位deg
+    # 左右雷达统一转换到 base_link 后的空间去重半径
+
+    # 车体坐标以左右后驱动轮轴心中点为原点，主体、脚踏板和脚尖安全区分层建模。
+    # 主体矩形到脚踏板后缘；脚踏板和脚尖安全区使用下方独立窄包络。
+    footprint_front: 0.50 # 主体车体包络的最前方x坐标，单位m
+    footprint_back: 0.14 # 主体车体包络的最后方x坐标，单位m
+    footprint_half_width: 0.27 # 主体车体包络的半宽，单位m
+    footrest_start_x: 0.57 # 脚踏板包络开始的x坐标，单位m
+    footrest_front_x: 0.75 # 脚踏板包络最前方x坐标，单位m
+    footrest_half_width: 0.23 # 脚踏板包络的半宽，单位m
+    toe_safety_front_x: 0.90 # 脚尖安全包络最前方x坐标，单位m
+    toe_safety_half_width: 0.23 # 脚尖安全包络的半宽，单位m
+    # 车体额外安全膨胀。当前先设为 0，避免过度保守导致走不动。
+    footprint_padding: 0.0 # 车体碰撞包络额外膨胀量，单位m
+    # 自车过滤主体只到主体前缘，0.50m 到脚踏板后缘之间按实测几何保留为真实开放区。
+    self_filter_body_front_x: 0.50 # 自车点过滤使用的主体前缘x坐标，单位m
+    # 真实车架和脚踏板自车点的过滤余量，只影响点云/栅格自过滤，不改变 DWA 碰撞外形。
+    footprint_self_filter_padding: 0.05 # 自车点过滤的额外余量，单位m
+    # 骑乘者身体区自点过滤：从速度模块清距和 DWA 障碍表里剔除骑乘者
+    # 腿部自反射点（膝盖实测x≈1.11、脚尖实测x≈0.83），修复骑行时永久
+    # 压速与转向失效问题。骑乘点随车同动，与障碍"世界中静止"仿真矛盾。
+    # 注意：不影响安全诊断（禁转区/侧边点集/侧硬停）——9.24 曾把过滤
+    # 扩到安全诊断并将起点下探 0.50，实测转向剧烈抖动，已回滚。
+    # 9.27 对齐 9.20 基线：基线障碍表无骑乘过滤；该宽过滤区把近距
+    # （<0.59m）宽墙整面删掉导致正前避障失效，先关闭实测。
+    # 9.27 R3：S弯实测（054326）膝盖点回障碍表（fwd恒距0.35~0.75最长
+    # 21圈、0.5m桶391圈），clearance 0.34~0.54 越过软边距在近平局评分里
+    # 逐圈翻转天平加重乱转。恢复过滤剔膝盖；撞墙风险由"速度模块已关+
+    # DWA全程在场远距绕行+R1/R2转向果断+硬停链(看全量点)"兜底。
+    # 9.27 F2(a)（放开全部限速实测后）：过滤区盲区带复发——宽墙进带
+    # 从障碍表消失，DWA满速valid冲到墙前触发硬停(0,+0.50)脱困，再满速
+    # 再硬停，体感"反复加减速、最后不能动"。对齐 9.20 基线关闭过滤；
+    # 膝盖点回表风险同上由 DWA 全程在场+R1/R2+硬停链兜底。
+    # 9.27 F3（070820 实测后）：关过滤的代价回显——膝盖/脚尖点把前向
+    # 轨迹批量判废（valid 108→3，空旷场fwd=9.8m也中招），脚稍岔开即
+    # 原地急转反向偏转；骑行全程 valid 21~43 压制加减速反复。恢复过滤
+    # + 新增宽簇墙闸：带内出现横向≥0.40m连续簇（墙）时本周期停用过滤，
+    # 盲区带不再复发；窄簇（膝盖/脚尖）仍正常剔除。代价：带内细杆类
+    # 障碍会被过滤（硬停链仍看全量点兜底）。
+    # Fix H(9.28)：关闭骑乘过滤带，对齐 9.11-ok 基线（基线无此带）。
+    # 窄墙 |y|≤0.35 与骑乘带同区域，F3 墙闸→Fix E→F→G 四轮补丁均
+    # 未解决窄通道蹭墙；跨车身观测已恢复直通（robot_main Fix H）。
+    # 代价=膝/脚点作为前方障碍（基线行为，保守减速）。
+    rider_self_filter_enabled: false # 骑乘者身体区自点过滤（Fix H 关闭回基线）
+    rider_self_filter_start_x: 0.76 # 骑乘者过滤区起始x坐标（碰撞前缘），单位m
+    rider_self_filter_front_x: 1.35 # 骑乘者过滤区最前x坐标（膝盖最前位置+余量），单位m
+    rider_self_filter_half_width: 0.35 # 骑乘者过滤区半宽，单位m
+    rider_filter_cluster_gap: 0.15 # 带内点y排序聚类的最大点间间隙，单位m
+    rider_filter_preserve_width: 0.40 # 判定"墙"的最小簇横向宽度（≥此值本周期停用过滤），单位m
+
+    # 9.27 速度模块总开关（A/B 实测用）：
+    # true  = 速度融合状态机（HAND/PREBRAKE/HOLD/SIDE_CAP/STATIC）。
+    # false = 速度模块整体旁路：前进意图+感知新鲜 ⇒ DWA 直接接管，
+    #         速度上限恒为 forward_speed_limit，档位透传原始档；
+    #         硬停止/倒车/原地转向走原安全通道。
+    dynamic_velocity_fusion_enabled: false # 是否启用速度融合状态机
+
+    # 6.18 版本角度脚区屏蔽：先在左右雷达各自原始扫描角度内处理，再融合到 DWA 栅格。
+    # 命中条件只包含扫描角度和距离，不叠加 local_x、车体系坐标或 footprint 判断。
+    local_foot_mask_enabled: false # 是否启用雷达原始扫描中的脚部角度屏蔽
+    local_foot_mask_max_range: 0.40 # 脚部角度屏蔽的最大距离，单位m
+    left_local_foot_angle_min_deg: 10.0 # 左雷达脚部屏蔽的最小扫描角，单位deg
+    left_local_foot_angle_max_deg: 90.0 # 左雷达脚部屏蔽的最大扫描角，单位deg
+    right_local_foot_angle_min_deg: -90.0 # 右雷达脚部屏蔽的最小扫描角，单位deg
+    right_local_foot_angle_max_deg: -10.0 # 右雷达脚部屏蔽的最大扫描角，单位deg
+
+    # DWA只使用两路雷达负责的前方扇区，跳过后方和重复扫描区域。
+    # 按 ROS LaserScan 正角度为左侧的约定，左右规划扇区对称覆盖前方。
+    left_planning_angle_min_deg: 30.0 # 左雷达参与DWA规划的最小角度，单位deg
+    left_planning_angle_max_deg: 180.0 # 左雷达参与DWA规划的最大角度，单位deg
+    right_planning_angle_min_deg: -180.0 # 右雷达参与DWA规划的最小角度，单位deg
+    right_planning_angle_max_deg: -30.0 # 右雷达参与DWA规划的最大角度，单位deg
+
+    # DWA 轨迹和前向碰撞评估参考点：左右雷达中间的车头中线点。
+    trajectory_reference_x: 0.50 # DWA轨迹碰撞评估参考点的x坐标，单位m
+    trajectory_reference_y: 0.0 # DWA轨迹碰撞评估参考点的y坐标，单位m
+
+    # 双雷达共同投影到这张局部占用栅格；射线扫过为空闲，命中为占用，未扫到保持未知。
+    grid_resolution: 0.05 # 局部占用栅格分辨率，单位m
+    grid_min_x: -0.80 # 局部占用栅格的最小x范围，单位m
+    grid_max_x: 3.60 # 局部占用栅格的最大x范围，单位m
+    grid_max_abs_y: 3.00 # 局部占用栅格的最大横向绝对范围，单位m
+    # 关闭栅格膨胀，避免5cm栅格向两侧额外缩窄真实通道。
+    grid_inflation_radius: 0.0 # 占用栅格向外膨胀半径，单位m
+    # 未观测格不直接阻塞车辆；真实命中点和完整车体包络负责碰撞检查。
+    # 若设为 true，双雷达射线之间残留的未知格会让全部候选轨迹失效，车辆无法起步。
+    grid_unknown_is_obstacle: false # 是否把未观测栅格视为障碍物
+    # 9.24: 轨迹碰撞评估已只查点云空间桶（不查栅格），建图链成为纯开销。
+    # false=跳过射线清空/占据标记/footprint清除/膨胀/诊断扫描（栅格尺寸仍保留，
+    # 障碍点表边界检查依赖它）。对拍或RViz需要看栅格时改回 true。
+    occupancy_grid_build_enabled: false
+
+    # 启动初值；运行后由动态状态机把每周期Vdwa写入DWA的max_velocity。
+    max_velocity: 0.70 # DWA当前最大前进线速度，单位m/s
+    # 原始DWA动态窗口允许的最低前进速度，不再强制抬高低速候选。
+    min_velocity: 0.0 # DWA候选允许的最低前进线速度，单位m/s
+    # 后退不进入DWA规划；倒车标尺与前进标尺一致，完整保留手柄原始幅度。
+    max_reverse_velocity: 0.70 # 允许的最大倒车线速度，单位m/s
+    # 候选轨迹展开参数：先让 RViz 中能明显看到左右绕行候选，不改评分权重。
+    max_yawrate: 1.40 # DWA候选允许的最大角速度，单位rad/s
+    # 低速转弯候选的最小角速度，来自上游DWA原始采样规则。
+    min_yawrate: 0.05 # 非直行候选采用的最小角速度，单位rad/s
+    # 线速度加速度限制。越大越容易从低速提升到目标速度。
+    # G2(10.09)：1.00→1.50，窗口顶每 tick +0.15（原 +0.10）——贴停/转弯后
+    # 速度恢复快一半，配合 G1 减少摇摇车"爬→冲"循环的低谷期。判死视界
+    # 不用加速度，风险仅在起步顿挫，实测验证。
+    max_acceleration: 1.50 # DWA线速度最大加速度，单位m/s²
+    # 线速度减速度限制。越大越容易快速降速。
+    max_deceleration: 1.50 # DWA线速度最大减速度，单位m/s²
+    # G1(10.09)：采样窗口下界专用减速度（仅影响候选窗口 v_low，判死视界
+    # T_veto=|v|/max_deceleration+reaction 与输出斜率限制仍用 max_deceleration）。
+    # 根因：两者共用 1.50 时拐角断崖窗口 [0.55,0.70] 候选全死→fallback(0,0)
+    # →实速崩 0→窗口锚定实速塌缩 [0,0.10]→sel 钉死 0.10 爬行（005931：44 次
+    # 贴停、25% 时间 <0.3m/s）。3.00×0.10=0.30/tick 下探，断崖时窗口
+    # [0.40,0.70] 保留中间刹车候选，sel 走 0.70→0.40→0.20 阶梯而非全死归零。
+    # <=0 或缺省退回 max_deceleration（原行为）。
+    sampling_deceleration_window: 3.00 # DWA采样窗口下界专用减速度，单位m/s²
+    # 角速度变化限制。越大，候选轨迹左右展开越明显。
+    # 10.08 纠错：9.24 曾按"回到 9.20 基线值"改为 3.2，经核对 9.11-ok 基线实为 12.0
+    # （150 共享原始包），属 C 重构时误降。0.7m/s 下窗口半宽 0.32 需 4 周期(0.4s)
+    # 才能爬到满舵，出弯纠偏盲走 ~28cm；恢复 12 后单周期可达 ±1.2（仍受 max_yawrate=1.40 钳位）。
+    max_d_yawrate: 12.00 # 角速度最大变化率，单位rad/s²
+    # 轨迹预测时间固定2s；可用ros2 param set热更新，但不会随速度自动变化。
+    predict_time: 2.00 # DWA轨迹预测时长，单位s
+    # 轨迹仿真步长。越小越精细，但计算更多。
+    sim_dt: 0.10 # 轨迹仿真时间步长，单位s
+    # DWA 控制周期估计，用于动态窗口速度变化范围。
+    control_period: 0.10 # DWA动态窗口使用的控制周期，单位s
+    # A4(10.09)：IMU 角速度闭环补偿（ltw 基线实车验证方案移植）。
+    # DWA 接管期（MOVING_DWA）以 bmi270(/dev/i2c-3) gz 为反馈，对发布
+    # 角速度做 P 阻尼+小积分+斜率限幅，补偿档位强制 1 档后的底板执行
+    # 缺口（051608 实测：通道内 selw 0.14 物理仅转 ~0.06，弯道转不过来）。
+    # IMU 初始化失败自动旁路（行为同旧版）。
+    yaw_feedback_enabled: true # IMU 角速度闭环补偿开关
+    # gz 符号约定：+1=左转 gz>0（与 w>0 一致）。上车验证：手推左转看
+    # 日志 [路径规划] gyroz，若为负改 -1。
+    imu_gz_sign: 1.0 # IMU 陀螺 z 轴符号（+1/-1）
+    # ---- A4b(10.09)：补偿强度 yaml 化（首版过补：宽走廊拖曳+通道转大）。
+    # ltw 原标定基准=1档0.35权限车；本项目 w_max=1.40 → w_scale=4.0 是根因之一。
+    # 以下键缺省/负值时用代码默认（与当前值相同），改值后 push yaml+重启即生效。
+    yaw_feedback_gain_follow: 0.30 # P 跟随增益（ltw 0.40→0.30 纠偏变柔）
+    yaw_feedback_gain_kill: 0.50 # P 压制增益（压过转，暂不动）
+    yaw_feedback_fight_margin: 0.08 # 压制触发余量 rad/s（走廊仍拖曳可试 0.12）
+    yaw_feedback_integ_max_frac: 0.15 # 积分上限=w_max×此值（ltw 0.35→0.15，上限0.49→0.21）
+    yaw_feedback_integ_release: 0.70 # 积分无需求泄漏/拍（ltw 0.85→0.70 退快一倍）
+    yaw_feedback_ref_w_max: 0.70 # w_scale 分母（ltw 0.35→0.70，即 w_scale 4.0→2.0 权限减半）
+    # 10.09 方案①：手柄豁免快率阈值。|打杆角|≥此值且建转朝手柄方向时，
+    # 建转斜率走快率(0.40/拍)——治"避障触发后打杆有 0.3~1.2s 延迟"（慢斜坡
+    # 只服务 DWA 自动弧平滑，人主动打方向不该被拦）。0=禁用豁免。
+    yaw_feedback_manual_slew_min_theta: 0.10
+    # 低于该线速度时，对非直行候选应用min_yawrate；原生w=0候选仍单独保留。
+    slow_velocity_threshold: 0.10 # 低速转弯候选判定阈值，单位m/s
+    # 线速度采样数量。越多候选越密，计算更多。
+    # 9.24 性能修复：7→4，配合角速度 27，候选总数 357→112，对齐 9.20 基线量级。
+    velocity_samples: 4 # 线速度采样数量
+    # 角速度采样数量。越多左右候选轨迹越密，RViz 更容易看清。
+    yawrate_samples: 27 # 角速度采样数量
+    # 调用线程加三个OpenMP工作线程共同计算候选轨迹，评分归一化仍保持原顺序。
+    planning_worker_count: 4 # DWA并行规划线程数量
+    # DWA 参与计算的最大障碍物距离。
+    # 10.08 恢复：2.5→3.5 恢复 9.11-ok 基线值（9.24 性能修复时曾收窄）。
+    # +1m 视距让弯道口内侧墙更早进入障碍表，缓解提前转；空间桶索引下计算量可承受。
+    obstacle_range: 3.50 # 参与DWA计算的最大障碍物距离，单位m
+    # 控制器方向意图映射到前方目标点的距离。
+    intent_lookahead: 2.00 # 控制器意图映射的前方目标距离，单位m
+    # 控制器角速度意图映射成横向目标偏移的比例。
+    # 10.09 刀1：语义改为"意图跟随增益"。目标点=意图弧端点(速度匹配)，
+    # 1.0=评分最优转向恒等于意图角速度(任意车速 1:1 跟随，消除直行小角度
+    # 死区与 5 档衰减)；>1=目标超越意图更激进；<1=更温和。旧语义(固定
+    # 横向偏移比例)已废弃——2.0 隐含按 0.7m/s 标定，5 档衰减至 0.43×。
+    intent_yaw_to_lateral: 1.00 # 意图跟随增益（目标点=意图弧端点）
+
+    # 原始DWA代价：所有有效候选先逐项归一化，再乘以下权重求总分。
+    obstacle_cost_gain: 1.00 # 障碍物代价权重
+    # 9.24 转向修复：障碍代价软边距（对齐 9.20 基线）。净距大于该值时障碍代价
+    # 归零——"够安全就平等"，避免障碍还很远就选大转避让；逼近障碍才被惩罚。
+    obstacle_cost_free_margin: 0.20 # 障碍代价软边距，单位m
+    # 只在直行且两侧净距均>60cm时，前方软避障评分从40→30cm平滑打开；
+    # 侧边靠墙时不缩放原评分。硬停止/碰撞否决/速度代价不改；手动转向不介入。
+    front_turn_bias_start_m: 0.40 # 前方软评分开始恢复，单位m
+    front_turn_bias_full_m: 0.30 # 前方软评分恢复到原强度，单位m
+    front_turn_bias_side_clearance_m: 0.60 # 两侧均比此值远才延迟前方评分
+    # 10.08 Fix V2→V3c：碰撞判死视距解耦 + 净距渐进罚（双视界）。
+    # 判死视界 T_veto=|v|/max_deceleration+reaction_sec（钳 [min,max]）：
+    # 视界内碰撞=刹车来不及→否决（通道贴墙防护，与 V2 逐位相同）。
+    # 净距视界=min(clearance_horizon_m, 刹车视距弧长+0.30m)：低速短弧
+    # （V3b 固定弧长 1.6m 在 v=0.7 通道把修正舵候选的弧线扫到对侧墙
+    # 满罚、修正被钳死→骑右墙；065301 实测 L-R +0.090 vs V2 +0.011），
+    # 高速以本值封顶（V3 时间视界 4 档拉到 2.28m 系统性压高速）。
+    # 弧长内步记真实净距（足迹内点记 0 满罚）但不判死——渐进转弯引导
+    # 保留（V2 墙隐形→16 次硬停，053316）。仅作用于候选评分；手柄直通
+    # 校验与前向净距探针（prebrake/硬停）保持全视界判死，安全层不受影响。
+    collision_veto_enabled: true # 是否启用碰撞判死视距解耦
+    toe_collision_margin_m: 0.10 # Toe-only forward safety buffer in meters
+    collision_veto_reaction_sec: 0.30 # 判死视界附加反应时间，单位s
+    collision_veto_min_sec: 0.50 # 判死视界下限，单位s
+    collision_veto_max_sec: 2.00 # 判死视界上限，单位s
+    clearance_horizon_m: 1.60 # 净距视界弧长封顶，单位m（低速端自动=刹车视距+0.30m）
+    to_goal_cost_gain: 0.80 # 目标方向代价权重
+    speed_cost_gain: 0.40 # 速度代价权重
+    path_cost_gain: 0.40 # 路径代价权重
+    # 当前控制链没有全局路径；速度和路径代价保持上游可选项的关闭状态。
+    use_speed_cost: false # 是否启用速度代价
+    use_path_cost: false # 是否启用全局路径代价
+    # 10.10 方案A+C（003347 定案：窄缝塌缩段 74% 评分自选 raw_v=sel_v=0 双零、
+    # 强打杆 31% 输出近零、6% 输出与意图反向——A5 证明旁路 target 恒 0.70 无
+    # 压制，必须动评分层）。
+    # 方案A：近障锁存+强打杆+前推时临时打开速度代价（仅该周期评分副本）：
+    # v=0 候选归一化后吃满罚、贴窗顶候选零罚——评分从"原地贴弧最优"翻回
+    # "贴窗顶推进最优"，差速转向有力，窗心 v 自锁环被打破。
+    scoring_manual_turn_min_yawrate: 0.50 # 方案A激活的打杆门槛 rad/s（0=禁用）
+    scoring_manual_turn_speed_gain: 0.80 # 方案A速度罚增益（仅激活期参与评分）
+    # 方案C：意图方向候选全判死时输出冻结(0,0)（同 no_valid_trajectory 路径），
+    # 不再选反向小弧——推左出右"不受控"根除。同号候选仍活时不触发。
+    intent_freeze_min_yawrate: 0.50 # 方案C激活的打杆门槛 rad/s（0=禁用）
+    # 原DWA只负责确定绕行大方向；二次选择只在同方向有效轨迹中匹配几何目标角。
+    dwa_geometric_selector_enabled: false # 是否启用DWA几何二次轨迹选择
+    # 9.24 转向修复：几何二次选择关闭。原 8° 航向增长帽在低速下把角速度
+    # 限到接近零；转弯过大问题改由障碍代价软边距（obstacle_cost_free_margin）
+    # + 可达目标点（dwa_scoring.c 内生效）在 DWA 评分内解决。
+    # 所有候选都在同一弧长位置比较弦方向角，避免把角速度直接当作转弯角度。
+    dwa_geometric_lookahead_distance: 0.50 # 几何二次选择的目标前视距离，单位m
+    dwa_geometric_min_lookahead_distance: 0.15 # 几何二次选择允许的最小前视距离，单位m
+    dwa_geometric_min_forward_offset: 0.05 # 几何目标点允许的最小前向偏移，单位m
+    # 左右雷达点先在base_link中融合聚类，E只从同一最近前方障碍物簇取。
+    dwa_geometric_cluster_gap_distance: 0.18 # 最近障碍物聚类的最大点间间隙，单位m
+    # 只保留最近前沿后方的局部点，避免远处墙面串入同一障碍簇。
+    dwa_geometric_cluster_forward_window: 0.40 # 障碍物聚类向前沿后方保留的窗口，单位m
+    # E 点只允许从最近前沿带内选取，避免使用远端横向极值。
+    dwa_geometric_edge_front_band: 0.10 # 最近障碍物前沿带宽，单位m
+    dwa_geometric_cluster_track_tolerance: 0.25 # 连续周期障碍簇跟踪横向容差，单位m
+    # 只有直推正前方小障碍才先让原DWA起手，宽墙和通道不进入等待状态。
+    dwa_geometric_centered_entry_max_width: 0.45 # 直推正前方障碍允许直接进入几何接管的最大宽度，单位m
+    dwa_geometric_handoff_stable_cycles: 3 # 几何接管前需要连续稳定的周期数
+    dwa_geometric_handoff_heading_agree_deg: 12.0 # 几何接管前方向一致性阈值，单位deg
+    dwa_geometric_raw_entry_yawrate: 0.30 # 几何入口使用的原始角速度，单位rad/s
+    # 二次轨迹至少保留5cm净距，且相对原DWA最多损失8cm。
+    dwa_geometric_min_candidate_clearance: 0.05 # 几何二次选择候选的最小净距，单位m
+    dwa_geometric_max_clearance_loss: 0.08 # 相对原DWA允许的最大净距损失，单位m
+    # E角度接近0度时仍选择同方向最小充分转角，不回退到原DWA大转弯。
+    dwa_geometric_min_target_angle_deg: 0.0 # 几何目标允许的最小目标角，单位deg
+    # 近距离小角度时沿原DWA绕障方向补偿目标角，避免正前近障碍只选几度小弯。
+    dwa_geometric_near_small_angle_distance: 0.50 # 近距离小角度补偿的触发距离，单位m
+    dwa_geometric_small_target_angle_deg: 10.0 # 近距离补偿使用的小目标角，单位deg
+    dwa_geometric_near_target_heading_compensation_deg: 7.0 # 近距离目标航向补偿角，单位deg
+    # 二次选择相对原始DWA弦方向最多只增加该角度，防止急转放大。
+    dwa_geometric_max_heading_growth_deg: 8.0 # 相对原DWA允许增加的最大航向角，单位deg
+    # 几何二次选择只接收目标角误差20度以内的轨迹，避免小角目标选到急转轨迹。
+    dwa_geometric_max_error_deg: 10.0 # 几何候选允许的最大目标角误差，单位deg
+    # 同方向存在安全候选时始终选取最接近E点目标角的轨迹；无候选才回退原DWA。
+    # 只有手柄明确给出反向角速度时，才切换到大方向相反的有效候选集合。
+    dwa_geometric_manual_override_yawrate: 0.00 # 手柄明确反向时的几何选择角速度覆盖值，单位rad/s
+    dwa_geometric_target_filter_alpha: 0.45 # 几何目标角一阶滤波系数
+    dwa_geometric_heading_tie_deg: 2.0 # 几何候选角度判定为并列的阈值，单位deg
+
+    # 左右雷达数据超时。超过该时间认为该侧雷达掉线。
+    scan_timeout_sec: 0.60 # 雷达数据超时时间，单位s
+    # 控制器输入超时。超过该时间 DWA 不再沿旧控制意图继续输出。
+    cmd_timeout_sec: 0.50 # 控制器输入超时时间，单位s
+    # odom 超时。超过该时间改用控制器意图近似当前速度。
+    odom_timeout_sec: 0.50 # 里程计数据超时时间，单位s
+    # 控制器线速度死区，小于该值认为没有前进意图。
+    deadband_linear: 0.02 # 控制器线速度死区，单位m/s
+    # 控制器角速度死区，小于该值认为没有转向意图。
+    deadband_angular: 0.02 # 控制器角速度死区，单位rad/s
+    # 直行覆盖期间忽略的角速度中位抖动；超过后按手柄角速度并行转向。
+    forced_straight_yaw_tolerance: 0.05 # 直行覆盖时允许忽略的角速度抖动，单位rad/s
+    # 摇杆相对正前方允许手动并行转向的左右角度；超出后恢复原控制链。
+    forced_straight_manual_cone_deg: 45.0 # 直行覆盖允许手动并行转向的角度范围，单位deg
+    # 手动并行转向在 ±30 度边界处使用的最大角速度，中间按偏转角线性缩放。
+    forced_straight_manual_max_yawrate: 0.30 # 直行覆盖下手动并行转向的最大角速度，单位rad/s
+    # 刀2(10.10)防抖锥直通化：true=非接管 valid_straight 路径手动转向直通原始手柄w，
+    # 不再按锥角比例压缩小转向；false=恢复旧防抖锥压缩。安全闸不受影响。
+    forced_straight_manual_passthrough: true # 直行覆盖手动转向是否直通，true/false
+    # 既有DWA兼容/诊断速度表；实际原厂档位线速度和角速度由0x81档位字段执行。
+    gear_peak_speeds: [0.70, 1.00, 1.20, 1.40, 1.67] # 各挡位峰值速度列表，单位m/s
+    # 档位闭环只改变程序内部的有效档位，不修改控制器原始档位反馈。
+    gear_closed_loop_enabled: true # 是否启用前方距离触发的有效档位闭环
+    gear_restore_hysteresis: 0.10 # 前方恢复开阔后恢复实际档位所需的滞回距离，单位m
+    gear_force_level: 1 # 进入前方减速距离后强制使用的档位
+    gear_force_forward_only: true # 是否只允许前进意图触发强制低档，触发后跨动作保持
+    gear_front_trigger_extra_angle_deg: 0.0 # gear-only expanded angle in degrees; does not affect DWA
+    gear_restore_hold_cycles: 10 # consecutive clear cycles before restoring raw gear
+    gear_transition_step_sec: 0.50 # per-gear interval during obstacle gear transition; inactive outside closed loop
+    gear_transition_safety_margin: 0.05 # gear-only dynamic trigger margin; does not change DWA distance
+    gear_speed_transition_enabled: true # 仅档位闭环手动路径启用实际线速度过渡
+    gear_speed_transition_duration_sec: 1.6 # 档位闭环进入/退出的线速度过渡时长，单位s
+    # 运动分支按 S=基础距离+霍尔实际速度*比例 计算一级减速起点。
+    moving_prebrake_base_distance: 0.90 # 运动预减速的基础触发距离，单位m
+    moving_prebrake_speed_ratio: 1.60 # 霍尔实速折算到预减速距离的比例
+    moving_prebrake_target_speed: 0.6944 # 预减速阶段目标速度，单位m/s（2.5km/h）
+    moving_prebrake_deceleration: 0.60 # 预减速使用的减速度，单位m/s²
+    # 9.27 距离比例减速：接近正前障碍时按净距线性减速（替代两档制恒定避障档
+    # ——0.6944 与满速 0.70 几乎相等，实测观察不到减速直接冲到障碍跟前）。
+    # 净距 >= far 满速；far -> zero 线性下降；净距 <= zero 目标 0（硬停/脱困接手）。
+    # 净距回升时目标按 recovery_acceleration 平滑恢复（防净距噪声速度抖动）。
+    # 9.27 晚间实测修订：zero 1.00 -> 0.40——旧值让车在障碍 1m 外就压到
+    # 8cm/s 爬行（体感"一走一停"）；0.40 只在真正贴近时才停，中段保持
+    # 可感知的行进速度。障碍进骑乘过滤盲区（净距读数跳 INF）时目标改用
+    # 锁存最小净距保持低速（dvf_maintain_front_latch），不再瞬间回满速。
+    moving_prebrake_profile_far_distance: 2.20 # 距离比例减速满速边界净距，单位m
+    # A3b(10.09)：0.40→0.20。045814 实锤：1m 弯道里前净距天然 0.2~0.6m（弧形
+    # 墙真实观测），040 时代 B1 全程压速（压速段占 71%，通道均速 1.8km/h），
+    # 且弯道口 v 被归零→差速转弯推不动→前净距转负→前方硬停止 8 次停死。
+    # 0.20 后：净距>0.20m 保持 0.70 巡航让转弯推进；0.20m 内仍线性归零，
+    # 末段挤压防护（103434）保留。
+    moving_prebrake_profile_zero_distance: 0.20 # 距离比例减速目标0边界净距，单位m
+    moving_prebrake_recovery_acceleration: 0.40 # 净距回升时目标速度恢复加速度，单位m/s²
+    # V4a(10.08)：F1d 释放防抖——净距须连续 N 个周期超 release(2.5m) 才解除
+    # 近障锁存。治感知单周期闪烁导致的 yo-yo 回冲（cap 瞬回档位峰值→再加速
+    # →再断崖）。0=恢复原单周期释放行为。
+    bypass_near_zone_release_hold_cycles: 3
+    # V4b(10.08)：F1d 断崖斜坡——进近障区时 target 从断崖瞬间 hall 实速按
+    # 斜坡减速度降到 0.70（不再瞬降）。治 5 档进通道 DWA 按 0.7 假想速度
+    # 评分、判死视界乐观 4 倍导致的追赶式急转撞对侧。指令曲线与实际减速
+    # 同步，实际车速不因此变快，只修正 DWA 认知。关掉=恢复原瞬降行为。
+    bypass_near_zone_ramp_enabled: true
+    bypass_near_zone_ramp_deceleration: 0.40 # 斜坡减速度，单位m/s²（≈电机桥实际减速）
+    # V4c(10.08)：F1d 近障锁存判定距离（独立参数，不再与上面距离比例减速的
+    # far_distance 2.20 共用）。H2(10.09) 用户定案：前方1.2m内有障碍就进
+    # 1档避障（target=0.70），前方净空（净距>1.50，+0.30迟滞且连续3周期
+    # 防抖）后释放1档锁定，恢复控制器原有档位速度。3.80 旧值因大走廊
+    # 边界抖动顿挫已废（014339 定案）；更远的减速由 DWA 评分层自行处理。
+    bypass_near_zone_far_distance: 1.20 # H2 近障锁存触发净距（前方1.2m内锁1档避障），单位m
+    # A3(10.09)：1档避障释放侧净距门控，单位m。用户定案"锁存后通道内
+    # 不允许提速"：释放须前方净空(>1.50 连续防抖)且 两侧任一侧净距>
+    # 本值。1m 窄弯里视线穿过弯道开口时 fwd 真实跳 3m+（040707 实锤
+    # 4 次误释放全在通道内→加速→墙点复现→再锁再刹），只看前方必在
+    # 通道内提速；通道内两侧恒 0.15~0.4m 永不释放，恒 0.70 到底，
+    # 驶出通道两侧先张开才恢复档位速度。0=禁用门控（退回 A2 行为）。
+    bypass_near_zone_release_side_distance: 0.40
+    moving_dwa_trigger_distance: 0.80 # 运动状态进入DWA接管的触发距离，单位m
+    # 普通运动分支必须先降到该实速以下，侧边紧急DWA和静止启动不走这个门槛。
+    moving_dwa_entry_speed_max: 0.70 # 普通运动进入DWA前要求的最大实速，单位m/s（不得大于max_velocity）
+    # 9.24 压速修复：PREBRAKE/HOLD/MOVING_DWA 解除阈值封顶滞回。
+    # 解除距离 = min(进入时锁存的预减速距离, moving_dwa_trigger_distance + 本值)。
+    # 原逻辑解除要用高速进入时锁存的距离（五档满速约3.57m），室内净距永远达不到，
+    # 导致一旦预减速就永久压在1.5km/h。同时 HOLD 目标速度改为双向跟踪距离剖面。
+    moving_release_hysteresis: 0.80 # 解除阈值相对DWA触发距离的封顶滞回，单位m
+    moving_dwa_speed_limit: 0.6944 # DWA接管期线速度上限，单位m/s（2.5km/h）
+    moving_dwa_force_gear: true # MOVING_DWA阶段使用控制器原生一档协议
+    moving_dwa_gear_level: 1
+    # 未进入DWA但物理整车1m圆形范围内有障碍物时，独立强制协议一档（已停用）。
+    near_obstacle_gear_enabled: false
+    near_obstacle_gear_center_x: 0.38 # 含脚踏/脚尖整车物理包络中心，相对base_link，单位m
+    near_obstacle_gear_center_y: 0.0
+    near_obstacle_gear_radius: 1.00 # 进入近障碍物限档的圆半径，单位m
+    near_obstacle_gear_release_radius: 1.10 # 释放近障碍物限档的圆半径，单位m
+    near_obstacle_gear_level: 1
+    # 动态制动为控制、规划和电机响应预留的时间与距离。
+    moving_prebrake_reaction_sec: 0.30 # 预减速反应时间，单位s
+    moving_prebrake_safety_margin: 0.05 # 预减速安全余量，单位m
+    # 预减速输出保持连续，距离不足时只提高每秒允许下降的Y值。
+    moving_prebrake_y_down_rate_min: 30.0 # 预减速输出Y的最小下降速率，单位Y/s
+    moving_prebrake_y_down_rate_max: 80.0 # 预减速输出Y的最大下降速率，单位Y/s
+    moving_prebrake_y_rate_release: 60.0 # 预减速解除时Y的恢复速率，单位Y/s
+    moving_hall_speed_filter_alpha: 0.35 # 霍尔速度滤波系数
+    # 控制器反馈档位无效或过期时使用的安全回退档位。
+    controller_gear_fallback: 1 # 无效或过期时使用的默认档位
+    # 静止起步近障判定Ls：车体前边缘到50cm宽方向检测区内最近真实命中点的净距。
+    static_start_distance: 0.50 # 静止起步近障判定距离，单位m
+    # 静止近障模式每0.1s按最近雷达距离、0.70m/s上限和K计算Vdwa。
+    static_vdwa_gain: 2.50 # 静止起步动态速度增益
+    static_vdwa_recalculate_sec: 0.10 # 静止起步动态速度重算周期，单位s
+    # 以70度为侧前边界，左右分别覆盖到车体后方180度。
+    side_detection_angle_deg: 20.0 # 侧边保护相对前向边界角，单位deg
+    manual_turn_forward_min_angle_deg: 65.0 # 手动转向判定的最小前向角，单位deg
+    manual_turn_forward_max_angle_deg: 115.0 # 手动转向判定的最大前向角，单位deg
+    # Side hard stop uses only fused real radar points, not DWA scoring.
+    side_hard_stop_circle_enabled: true # 是否启用侧边硬停止圆形保护
+    # 圆心前移以覆盖车体前半部、脚踏板和脚尖安全区，保留车尾后部的非保护区域。
+    side_hard_stop_circle_center_x: 0.51 # 侧边硬停止保护圆心x坐标，单位m
+    side_hard_stop_circle_center_y: 0.0 # 侧边硬停止保护圆心y坐标，单位m
+    side_hard_stop_circle_radius: 0.40 # 侧边硬停止保护圆半径，单位m
+    side_hard_stop_reverse_escape_yawrate: 0.08 # 倒车侧边硬停时叠加的反向脱困角速度，单位rad/s
+    # 侧边扫掠使用左右轮霍尔角速度，并将远期风险转换为角速度限幅。
+    side_hard_stop_wheel_track_m: 0.50 # 左右驱动轮轮距，单位m
+    side_hard_stop_sweep_prediction_sec: 0.45 # 侧边扫掠保护的预测时间，单位s
+    # 仅在霍尔实速预计于该制动窗口内进入圆形区域时执行硬停。
+    side_hard_stop_sweep_brake_sec: 0.25 # 侧边扫掠硬停的制动窗口，单位s
+    side_hard_stop_sweep_min_yawrate: 0.15 # 侧边扫掠保护生效的最小角速度，单位rad/s
+    # 前方硬停止时，仅在左右至少一侧有足够净距时低速脱困。
+    front_hard_stop_escape_enabled: true # DWA内部硬停止脱困启用
+    radar_contact_distance: 0.065 # D6最小量程饱和判定；仅前方保护区域内不大于该距离时触发前进硬停止，单位m
+    hard_stop_release_clear_cycles: 3 # 硬停止解除前要求连续无硬停止条件的周期数
+    front_hard_stop_escape_min_clearance: 0.10 # 前方硬停允许脱困所需的最小侧向净距，单位m
+    front_hard_stop_escape_linear_speed:  0.00 # DWA内部脱困只输出角速度，线速度固定为0
+    front_hard_stop_escape_yawrate:  0.50 # DWA内部脱困角速度，单位rad/s
+    stop_escape_trigger_sec: 0.00 # DWA内部连续硬停止触发时间，单位s
+    # 普通DWA线速度使用非对称加减速斜坡；急停分支不经过该斜坡。
+    dwa_velocity_ramp_enabled: true # 是否启用普通DWA输出速度斜坡
+    # 霍尔实速超过1.20m/s时，当前或预测侧距进入30cm便平滑限到1.20m/s。
+    side_speed_trigger: 99.0 # 侧边动态限速的实速触发阈值（99=停用侧边限速）
+    side_speed_target: 1.20 # 侧边动态限速的目标速度，单位m/s
+    side_limit_distance: 0.30 # 侧边动态限速触发距离，单位m
+    side_prediction_reaction_sec: 0.25 # 侧边距离预测的反应时间，单位s
+    side_prediction_deceleration: 1.50 # 侧边动态限速使用的减速度，单位m/s²
+    side_closing_rate_filter_alpha: 0.35 # 侧向接近速度滤波系数
+    side_closing_rate_max: 1.00 # 侧向接近速度最大限值，单位m/s
+    # 两侧都回到30cm外并保持0.30s后再平滑恢复手柄速度。
+    side_cap_release_distance: 0.30 # 侧边限速解除所需的最小安全距离，单位m
+    side_cap_release_clear_sec: 0.30 # 侧边限速解除前需要保持安全的时间，单位s
+    side_target_down_rate: 1.50 # 侧边限速目标速度下降速率，单位m/s²
+    side_target_up_rate: 0.20 # 侧边限速目标速度恢复速率，单位m/s²
+    # 20cm内限制继续向墙转；预测净距低于20cm且另一侧大于20cm时主动向外修正。
+    side_wall_hold_enabled: true # 是否启用侧墙保持控制
+    side_wall_hold_distance: 0.20 # 侧墙保持开始限制内侧转向的距离，单位m
+    side_wall_hold_correction_distance: 0.20 # 侧墙保持主动向外修正的距离，单位m
+    # 侧距还在变小时，提前看0.60s；预测会进入20cm就开始平缓往外修正。
+    side_wall_hold_prediction_sec: 0.60 # 侧墙保持的前视预测时间，单位s
+    # 雷达偶尔丢一个侧边点时，短时间沿用最近有效距离，避免补偿突然清零。
+    side_wall_hold_invalid_hold_sec: 0.25 # 侧边点短暂失效时保持旧距离的时间，单位s
+    # 只接管前进区边缘的轻微偏角，强手动转向仍走25cm停止保护。
+    side_wall_hold_forward_margin_deg: 5.0 # 侧墙保持允许接管的前向角余量，单位deg
+    side_wall_hold_release_distance: 0.22 # 侧墙保持解除距离，单位m
+    side_wall_hold_kp: 0.80 # 侧墙距离误差比例增益
+    side_wall_hold_min_yawrate: 0.04 # 侧墙保持最小修正角速度，单位rad/s
+    side_wall_hold_max_yawrate: 0.12 # 侧墙保持最大修正角速度，单位rad/s
+    side_wall_hold_yaw_accel: 0.25 # 侧墙保持角速度变化率，单位rad/s²
+    side_wall_hold_release_sec: 0.30 # 侧墙保持解除前需要持续安全的时间，单位s
+    # 保留git基线的释放机制：超过对应接管距离后立即退出DWA，不额外增加距离和时间。
+    dynamic_release_margin: 0.0 # 动态DWA解除接管的额外距离余量，单位m
+    dynamic_release_clear_sec: 0.0 # 动态DWA解除接管前需要保持安全的时间，单位s
+    speed_restore_side_clearance: 0.20 # 恢复高速时左右侧均需大于此距离，单位m
+    speed_restore_sweep_clearance: 0.45 # 恢复高速时车体前向扫掠区需大于此距离，单位m
+    speed_restore_stable_sec: 1.0 # 全部安全条件连续满足此时间后才恢复高速，单位s
+    speed_restore_max_yawrate: 0.12 # 恢复高速要求车体/行驶方向稳定，允许角速度，单位rad/s
+    # 保留给RViz距离线的基础显示宽度，按实测车体宽度设置。
+    front_corridor_width: 0.54 # 前方通道参考显示宽度，单位m
+    # 前方 DWA 触发区从左右雷达中心线开始，几何选簇使用同一套外扩梯形。
+    front_trigger_start_x: 0.50 # 前方DWA触发区域起始x坐标，单位m
+    front_trigger_base_width: 0.54 # 前方DWA触发区域基础宽度，单位m
+    front_trigger_expand_angle_deg: 5.0 # 前方触发区域随距离扩展的角度，单位deg
+    # 控制器X/Y中心为100，89～111范围内视为死区。
+    controller_x_dead_low: 89 # 控制器X轴死区下限
+    controller_x_dead_high: 111 # 控制器X轴死区上限
+    controller_y_dead_low: 89 # 控制器Y轴死区下限
+    controller_y_dead_high: 111 # 控制器Y轴死区上限
+
+    # 霍尔轮速反馈超时，只用于DWA当前线速度估计。
+    hall_feedback_timeout_sec: 0.25 # 霍尔轮速反馈超时时间，单位s
+
+    # 没有 /cmd_vel_raw 时可临时设为 0.30~0.50，只用于 RViz 看轨迹，不接电机。
+    debug_nominal_speed: 0.0 # 无控制器输入时的调试名义速度，单位m/s
+    # true 表示强制使用 debug_nominal_speed；实车接电机必须保持 false。
+    force_debug_intent: false # 是否强制使用调试名义速度
+    # DWA 点云裁剪的最小 x，保留少量车后点用于观察，不参与主动后退。
+    planning_min_x: -0.15 # 参与DWA点云裁剪的最小x坐标，单位m
+    # DWA 点云裁剪的最大横向范围，防止远处侧向无关点撑乱 RViz。
+    planning_max_abs_y: 2.50 # 参与DWA点云裁剪的最大横向绝对范围，单位m
+    # RViz 候选轨迹抽稀显示比例。越小显示越密，RViz 越乱。
+    marker_stride: 6 # RViz候选轨迹显示抽稀步长
+    # 打印 DWA 候选轨迹评分摘要：Top N 有效轨迹 + 无效轨迹原因统计。
+    # 正式电机模式关闭逐轨迹评分日志，预览调试时再显式开启。
+    log_trajectory_scores: false # 是否输出DWA候选轨迹评分摘要
+    # 实车模式由 start_dwa_motor_test.sh 关闭；预览模式保持开启。
+    # 正式电机模式不序列化RViz数据，start_dwa_preview.sh会显式打开。
+    publish_debug_visualization: false # 是否发布RViz调试可视化数据
+    trajectory_score_top_n: 10 # 评分日志中输出的有效轨迹数量
+    trajectory_score_log_interval_ms: 1000 # 评分日志输出间隔，单位ms
+
+    # Migrated 8.21 corridor guidance only; short-term map intentionally omitted.
+    dwa_corridor_guide_enabled: true # 是否启用通道参考线引导
+    # 通道检测从雷达前更近处开始，避免车头已接近通道口时边缘点被提前排除。
+    dwa_corridor_search_start_x: 0.25 # 通道搜索起始x坐标，单位m
+    dwa_corridor_search_end_x: 1.80 # 通道搜索结束x坐标，单位m
+    # 最小通道宽度由完整车体宽度加该余量动态计算，最终安全性仍由DWA碰撞预测确认。
+    dwa_corridor_min_width_margin: 0.04 # 通道最小宽度相对车体宽度的额外余量，单位m
+    dwa_corridor_max_width: 1.30 # 允许识别的最大通道宽度，单位m
+    dwa_corridor_search_half_width: 1.20 # 通道搜索区域的横向半宽，单位m
+    # 欧氏聚类和通道门几何约束只负责生成候选，最终碰撞安全仍由原始DWA验证。
+    dwa_corridor_cluster_gap_distance: 0.14 # 通道点聚类的最大点间间隙，单位m
+    dwa_corridor_cluster_min_points: 3 # 通道边界聚类所需的最少点数
+    dwa_corridor_gate_max_depth_difference: 0.50 # 通道门两端允许的最大深度差，单位m
+    dwa_corridor_gate_blocking_clearance: 0.10 # 通道门判定的阻塞净距阈值，单位m
+    dwa_corridor_gate_endpoint_exclusion: 0.12 # 通道门端点排除距离，单位m
+    dwa_corridor_gate_dedup_distance: 0.16 # 通道门去重距离，单位m
+    dwa_corridor_gate_projection_length: 0.75 # 通道门投影长度，单位m
+    # 中心线参考点前移到近场检测起点，入口角度由base_link原点单独计算。
+    dwa_corridor_approach_start_x: 0.25 # 通道中心线接近段起始x坐标，单位m
+    # 手柄仅前推时按入口中心到前参考点的真实距离选最近通道；明确带方向时方向优先。
+    dwa_corridor_explicit_intent_ratio: 0.15 # 明确手柄方向意图的最小比例
+    dwa_corridor_max_heading_deg: 60.0 # 通道入口允许的最大航向角，单位deg
+    dwa_corridor_intent_lateral_range: 0.70 # 手柄意图横向映射范围，单位m
+    dwa_corridor_stable_cycles: 3 # 通道状态激活前需要连续稳定的周期数
+    dwa_corridor_lost_hold_cycles: 4 # 通道短暂丢失时保持状态的周期数
+    dwa_corridor_track_lateral_tolerance: 0.35 # 通道中心线跟踪横向容差，单位m
+    dwa_corridor_track_heading_tolerance_deg: 25.0 # 通道中心线跟踪航向容差，单位deg
+    dwa_corridor_path_filter_alpha: 0.35 # 通道参考线滤波系数
+    dwa_corridor_trajectory_lookahead: 1.20 # 通道参考线的轨迹前视距离，单位m
+    # 通道中心线只作为原始DWA的连续软评分，不直接接管速度或过滤轨迹。
+    dwa_corridor_lateral_weight: 2.00 # 通道横向偏差软评分权重
+    dwa_corridor_heading_weight: 0.70 # 通道航向偏差软评分权重
+    dwa_corridor_progress_weight: 0.35 # 通道前进进度软评分权重
+
+
+# 融合节点与 DWA 共用同一套雷达外参与坐标参数；这里只做一次 LaserScan->base_link 转换。
+laser_scan_fusion:
+  ros__parameters:
+    left_scan_topic: /dwa/scan_left_filtered
+    right_scan_topic: /dwa/scan_right_filtered
+    output_topic: /dwa/fused_scan_base
+    frame_id: base_link
+    left_laser_x: 0.545
+    left_laser_y: 0.280
+    left_laser_yaw: -1.5707963267948966
+    left_laser_angle_reversed: false
+    left_laser_angle_offset_deg: 0.0
+    right_laser_x: 0.545
+    right_laser_y: -0.280
+    right_laser_yaw: 1.5707963267948966
+    right_laser_angle_reversed: false
+    right_laser_angle_offset_deg: 0.0

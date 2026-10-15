@@ -1,0 +1,12 @@
+# aarch64 交叉工具链（板端 Linux，P8 使用）
+# 用法: cmake -DCMAKE_TOOLCHAIN_FILE=cmake/aarch64.cmake ..
+set(CMAKE_SYSTEM_NAME Linux)
+set(CMAKE_SYSTEM_PROCESSOR aarch64)
+
+set(CMAKE_C_COMPILER aarch64-linux-gnu-gcc)
+set(CMAKE_CXX_COMPILER aarch64-linux-gnu-g++)
+
+set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -O2 -ffloat-store")
+set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
+set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
+set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)

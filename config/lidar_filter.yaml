@@ -1,0 +1,43 @@
+# 模块功能：左右雷达LaserScan滤波、扇区统计和输入输出话题参数。
+# 修改提示：本文件只负责上述职责，修改参数或流程时先确认上下游接口。
+left_lidar_preprocessor:
+  ros__parameters:
+    # 左雷达原始 LaserScan 输入。
+    input_topic: /scan_left_raw  # 原始LaserScan输入话题。
+    # 左雷达滤波 LaserScan 输出，DWA 实际读取这个话题。
+    output_topic: /dwa/scan_left_filtered  # 滤波后的LaserScan输出话题，供DWA读取。
+    # 左雷达 360 度切片最小距离输出，只用于调试观察，不直接替代点云。
+    sector_topic: /dwa/scan_left_sectors  # 各角度扇区最小距离输出话题，仅用于诊断。
+    # 距离滤波窗口大小。越大越平滑，但越容易抹掉细小障碍物。
+    window_size: 5  # 统计滤波窗口大小。
+    # 统计离群阈值。越小过滤越强，越大越接近原始点云。
+    stddev_multiplier: 1.0  # 统计离群点阈值倍数。
+    # 窗口内至少需要多少个有效点才保留当前点。
+    min_valid_samples: 3  # 窗口内保留当前点所需的最少有效样本数。
+    # 角度切片数量。24 表示 360 度分成 24 个 15 度区域。
+    sector_count: 24  # 360度被划分的扇区数量。
+    # 切片起始角度，单位度。
+    sector_start_deg: -180.0  # 扇区统计起始角度，单位deg。
+    # 切片结束角度，单位度。
+    sector_end_deg: 180.0  # 扇区统计结束角度，单位deg。
+
+right_lidar_preprocessor:
+  ros__parameters:
+    # 右雷达原始 LaserScan 输入。
+    input_topic: /scan_right_raw  # 原始LaserScan输入话题。
+    # 右雷达滤波 LaserScan 输出，DWA 实际读取这个话题。
+    output_topic: /dwa/scan_right_filtered  # 滤波后的LaserScan输出话题，供DWA读取。
+    # 右雷达 360 度切片最小距离输出，只用于调试观察，不直接替代点云。
+    sector_topic: /dwa/scan_right_sectors  # 各角度扇区最小距离输出话题，仅用于诊断。
+    # 距离滤波窗口大小。越大越平滑，但越容易抹掉细小障碍物。
+    window_size: 5  # 统计滤波窗口大小。
+    # 统计离群阈值。越小过滤越强，越大越接近原始点云。
+    stddev_multiplier: 1.0  # 统计离群点阈值倍数。
+    # 窗口内至少需要多少个有效点才保留当前点。
+    min_valid_samples: 3  # 窗口内保留当前点所需的最少有效样本数。
+    # 角度切片数量。24 表示 360 度分成 24 个 15 度区域。
+    sector_count: 24  # 360度被划分的扇区数量。
+    # 切片起始角度，单位度。
+    sector_start_deg: -180.0  # 扇区统计起始角度，单位deg。
+    # 切片结束角度，单位度。
+    sector_end_deg: 180.0  # 扇区统计结束角度，单位deg。

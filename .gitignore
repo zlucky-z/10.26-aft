@@ -1,0 +1,40 @@
+# Build outputs
+native_build/
+.make_build/
+.tmp_tests/
+build/
+install/
+log/
+
+# WorkBuddy local project data (memory/logs, not source)
+.workbuddy/
+
+# Cross-compiled deploy binaries kept in logs_analysis (artifacts, not source)
+logs_analysis/robot_main_*
+
+# Board binary snapshots pulled back from 237 (deploy artifacts, not source)
+logs_analysis/board_bin_*
+
+# Local build verification outputs
+c/build_verify_*/
+
+# Windows reserved name accidents
+nul
+
+# Runtime and temporary files
+*.log
+*.tmp
+*.tgz
+*.tar.gz
+*.zip
+__pycache__/
+.pytest_cache/
+
+# OS/editor files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+build_verify_*/
+logs_analysis/
