@@ -138,6 +138,36 @@ typedef struct mb_bridge_t {
   /* 电机桥兜底脱困事件统计：按 active 的上升沿计数。 */
   uint64_t stop_escape_event_count;
   int stop_escape_event_active;
+  uint64_t tx_attempt_count;
+  uint64_t tx_full_count;
+  uint64_t tx_fail_count;
+  long tx_last_result;
+  int tx_last_errno;
+  double tx_last_time;
+  double last_chain_diag_time;
+  double last_tx_error_log_time;
+  /* 控制器有效反馈在线门控：启动后给予 1s 接收宽限，之后按有效帧刷新。 */
+  double controller_feedback_last_valid_time;
+  int controller_feedback_seen;
+  int controller_feedback_online;
+  /* Optional production interlock; individual sensor health is independent. */
+  int sensor_interlock_enabled;
+  int sensor_fault_last_mask;
+  double last_valid_imu_time;
+  int valid_imu_seen;
+  int dwa_escape_request;
+  double dwa_escape_request_time;
+  double escape_imu_yaw_rate;
+  double escape_imu_time;
+  int escape_imu_valid;
+  double escape_yaw_integral;
+  double escape_yaw_output;
+  se_direction_t escape_yaw_direction;
+  double escape_yaw_diag_target;
+  double escape_yaw_diag_actual;
+  double escape_yaw_diag_output;
+  double escape_yaw_last_update_time;
+  double escape_last_diag_log_time;
   mc_hall_speed_controller_t hall_speed_controller;
   mc_moving_hold_controller_t moving_hold_controller;
   mc_prebrake_stop_controller_t prebrake_stop_controller;
@@ -247,6 +277,9 @@ void mb_on_cmd(mb_bridge_t *b, double linear_x, double angular_z);
 void mb_on_hall_speed_control(mb_bridge_t *b, const float *data,
   size_t data_size);
 void mb_on_escape_cloud(mb_bridge_t *b, const mb_cloud_view_t *cloud);
+void mb_on_escape_request(mb_bridge_t *b, int requested);
+void mb_on_escape_imu_yawrate(mb_bridge_t *b, double yawrate, int valid);
+void mb_bridge_enable_sensor_interlock(mb_bridge_t *b, int enabled);
 void mb_on_left_scan(mb_bridge_t *b);
 void mb_on_right_scan(mb_bridge_t *b);
 void mb_on_imu(mb_bridge_t *b, double ax, double ay, double az);

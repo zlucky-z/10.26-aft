@@ -152,16 +152,20 @@ int ms_serial_writer_open(
   return 0;
 }
 
-void ms_serial_writer_write(ms_serial_writer_t *w, const mp_frame_t *frame)
+long ms_serial_writer_write(ms_serial_writer_t *w, const mp_frame_t *frame,
+  int *error_out)
 {
-  if (w->dry_run) return;
+  if (error_out != NULL) *error_out = 0;
+  if (w->dry_run) return -2;
 #if !defined(_WIN32)
   {
-    const ssize_t ignored = write(w->fd, frame->bytes, frame->len);
-    (void)ignored;
+    const ssize_t written = write(w->fd, frame->bytes, frame->len);
+    if (written < 0 && error_out != NULL) *error_out = errno;
+    return (long)written;
   }
 #else
   (void)frame;
+  return -2;
 #endif
 }
 

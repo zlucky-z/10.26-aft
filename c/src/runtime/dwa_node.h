@@ -57,7 +57,9 @@ static inline void dwa_twist_reset(dwa_twist_t *t)
 
 /* ---- Hall 速度控制输出帧（std_msgs::msg::Float32MultiArray 数据面，8 元素） ---- */
 typedef struct {
+  /* Internal callback metadata; not serialized to the controller. */
   float data[8];
+  int escape_request;
 } dwa_hall_speed_control_msg_t;
 
 /*
@@ -168,6 +170,7 @@ typedef struct {
   uint64_t no_valid_escape_last_tick;
   uint64_t hard_stop_escape_event_count;
   uint64_t hard_stop_escape_event_last_tick;
+  bool escape_request_pending;
   /* 9.28 Fix I：方向锁定时刻（滞回窗口起点），NaN = 未锁定 */
   float hard_stop_escape_direction_latched_sec;
   bool near_obstacle_gear_latched;

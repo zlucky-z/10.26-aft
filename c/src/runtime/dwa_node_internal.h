@@ -14,6 +14,9 @@ extern "C" {
 
 /* ===== dwa_node_perception.c（node_perception_grid/scan.inc 直译） ===== */
 
+bool dnp_inside_physical_side_sector(
+  const dwa_node_t *node, const dwa_point_t *point);
+
 void dnp_reset_occupancy_grid(const dwa_node_t *node, dwa_occupancy_grid_t *grid);
 
 void dnp_project_base_cloud_to_grid(

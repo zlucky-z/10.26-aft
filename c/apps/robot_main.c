@@ -65,6 +65,7 @@
 #include "../src/drivers/cspc_lidar_pair.h"
 #include "../src/drivers/bmi270.h"
 #include "../src/hal/hal_log.h"
+#include "../src/hal/hal_time.h"
 #include "../src/motor/motor_bridge.h"
 #include "../src/motor/motor_bridge_config.h"
 #include "../src/motor/yaw_feedback.h"
@@ -103,6 +104,7 @@ typedef struct {
   float angle_min, angle_max, angle_increment;
   float range_min, range_max;
   int fresh;
+  double updated_time;
   unsigned long frames;
   pthread_mutex_t mu;
 } rm_side_t;
@@ -157,12 +159,16 @@ typedef enum {
   RM_EV_HALL,
   RM_EV_SCAN_L,
   RM_EV_SCAN_R,
-  RM_EV_ESCAPE
+  RM_EV_ESCAPE,
+  RM_EV_ESCAPE_REQUEST,
+  RM_EV_ESCAPE_IMU
 } rm_ev_type_t;
 
 typedef struct {
   rm_ev_type_t type;
   double linear_x, angular_z;
+  int escape_request;
+  int imu_valid;
   float hall[8];
 } rm_event_t;
 
@@ -182,6 +188,7 @@ static int g_dry_run = 0;
 /* RM_DEBUG_CLOUD=1：每 20 帧打印原始/滤波近距光束与融合前方区域点，
  * 用于定位幻影近点（P9 排障，不影响数据面）。 */
 static int g_debug_cloud = 0;
+static double g_last_dwa_chain_diag_time = 0.0;
 
 /* ============================ 小工具 ============================ */
 
@@ -299,18 +306,19 @@ static void rm_fuse(void)
 {
   int s;
   int both = 1;
-
-  for (s = 0; s < 2; ++s) {
-    if (!g_side[s].fresh) both = 0;
-  }
-  if (!both) return;
+  const double now = rm_now_sec();
+  const double timeout = g_node.params_snapshot.scan_timeout_sec;
 
   pthread_mutex_lock(&g_cloud_mu);
 
-  /* 拷出双侧最新滤波扫描（锁序：cloud → side，全局一致）。 */
+  /* 必须两侧都在超时窗口内更新；不允许用一侧新扫描伪装整幅融合云新鲜。 */
   for (s = 0; s < 2; ++s) {
     size_t n;
     pthread_mutex_lock(&g_side[s].mu);
+    if (!g_side[s].fresh || g_side[s].updated_time <= 0.0 ||
+        now - g_side[s].updated_time > timeout) {
+      both = 0;
+    }
     n = g_side[s].count;
     if (n > RM_SCAN_MAX) n = RM_SCAN_MAX;
     memcpy(g_local_ranges[s], g_side[s].ranges, n * sizeof(float));
@@ -322,6 +330,10 @@ static void rm_fuse(void)
     g_local_scan[s].ranges = g_local_ranges[s];
     g_local_scan[s].range_count = n;
     pthread_mutex_unlock(&g_side[s].mu);
+  }
+  if (!both) {
+    pthread_mutex_unlock(&g_cloud_mu);
+    return;
   }
 
   /* append_scan ×2（laser_scan_fusion publish_if_ready 直译）。 */
@@ -511,6 +523,7 @@ static void rm_scan_callback(void *user, const cspc_laser_scan_t *scan)
   g_side[side].range_min = scan->min_range;
   g_side[side].range_max = scan->max_range;
   g_side[side].fresh = 1;
+  g_side[side].updated_time = rm_now_sec();
   g_side[side].frames++;
   pthread_mutex_unlock(&g_side[side].mu);
 
@@ -593,6 +606,12 @@ static void rm_drain_bridge_events(void)
       break;
     case RM_EV_SCAN_R:
       mb_on_right_scan(&g_bridge);
+      break;
+    case RM_EV_ESCAPE_REQUEST:
+      mb_on_escape_request(&g_bridge, ev.escape_request);
+      break;
+    case RM_EV_ESCAPE_IMU:
+      mb_on_escape_imu_yawrate(&g_bridge, ev.angular_z, ev.imu_valid);
       break;
     case RM_EV_ESCAPE: {
       /* 生产语义：桥的逃逸点云订阅 = 融合输出（PointCloud2 布局）。 */
@@ -700,6 +719,7 @@ static void *rm_bridge_bootstrap(void *arg)
     rm_exit(1);
   }
   g_bridge_inited = 1;
+  mb_bridge_enable_sensor_interlock(&g_bridge, 1);
   mb_bridge_set_controller_cmd_sink(&g_bridge, rm_controller_cmd_sink, NULL);
   mb_bridge_set_feedback_sink(&g_bridge, rm_feedback_sink, NULL);
 
@@ -725,11 +745,9 @@ static void rm_imu_poll(void)
   planner_motor_feedback_snapshot_t fb;
   float w_wheel;
   int imu_ok = 0;
+  int imu_sample_fresh = 0;
 
-  if (!g_imu_ready) {
-    return;
-  }
-  {
+  if (g_imu_ready) {
     Bmi270ImuSample imu;
     if (bmi270_read(&imu) == 0 && fabsf(imu.gz) < 8.0f) {
       const float gz = g_gz_sign * imu.gz;
@@ -741,6 +759,7 @@ static void rm_imu_poll(void)
       }
       g_imu_fail = 0;
       imu_ok = 1;
+      imu_sample_fresh = 1;
     } else {
       g_imu_fail++;
       if (g_gz_filt_init) {
@@ -772,6 +791,14 @@ static void rm_imu_poll(void)
     g_w_meas = g_wfb_filt;
   }
   g_imu_ok = imu_ok;
+  {
+    rm_event_t ev;
+    memset(&ev, 0, sizeof(ev));
+    ev.type = RM_EV_ESCAPE_IMU;
+    ev.angular_z = imu_ok ? (double)g_gz_filt : 0.0;
+    ev.imu_valid = imu_sample_fresh && imu_ok;
+    rm_post_event(&ev);
+  }
 }
 
 static void rm_cmd_sink(void *user, const dwa_twist_t *cmd,
@@ -811,6 +838,11 @@ static void rm_cmd_sink(void *user, const dwa_twist_t *cmd,
   memset(&ev, 0, sizeof(ev));
   ev.type = RM_EV_HALL;
   memcpy(ev.hall, hall_control->data, sizeof(ev.hall));
+  rm_post_event(&ev);
+
+  memset(&ev, 0, sizeof(ev));
+  ev.type = RM_EV_ESCAPE_REQUEST;
+  ev.escape_request = hall_control->escape_request;
   rm_post_event(&ev);
 }
 
@@ -889,6 +921,7 @@ static int rm_build_bridge_argv(const char *motor_port, int dry_run,
     "--wheel-yaw-topic", "/dwa/wheel_yaw_total",
     "--wheel-track-m", "0.50",
     "--wheel-yaw-max-dt", "0.15",
+    "--escape-stop-hold-sec", "0.0",
     "--no-controller-require-neutral",
     /* 9.27 去掉干预路径角速度 slew：默认 0.9 rad/s²（每 0.1s 周期 w 最多
      * 变 0.09，0→1.4 需 1.55s），且只在 DWA 避障干预写帧时生效——实测
@@ -1139,6 +1172,29 @@ int main(int argc, char **argv)
      * 同源；ltw 同款语义）。未补偿/未发布时不动。 */
     if (published && g_yf_applied) {
       g_node.last_published_cmd.angular_z = g_yf_last_w;
+    }
+    if (rm_now_sec() - g_last_dwa_chain_diag_time >= 1.0 ||
+        g_last_dwa_chain_diag_time == 0.0) {
+      hal_log(HAL_LOG_INFO,
+        "dwa_chain mono=%.3f tick=%llu pub=%d intent=(%.3f,%+.3f) raw=(%.3f,%+.3f) selected=(%.3f,%+.3f) published=(%.3f,%+.3f) path=%s mode=%s valid=%d takeover=%d hard_latch=%d escape_pending=%d front=%.3f side=(%.3f,%.3f) candidates=%zu hits=%zu",
+        hal_steady_now_sec(), (unsigned long long)g_node.tick_count,
+        published ? 1 : 0, (double)intent.v, (double)intent.w,
+        (double)g_node.diag_raw_dwa_v, (double)g_node.diag_raw_dwa_w,
+        (double)g_node.diag_selected_v, (double)g_node.diag_selected_w,
+        (double)g_node.last_published_cmd.linear_x,
+        (double)g_node.last_published_cmd.angular_z,
+        g_node.diag_path,
+        dwa_dynamic_control_mode_name(
+          (dwa_dynamic_control_mode_t)g_node.diag_mode),
+        g_node.diag_valid_count, g_node.diag_takeover,
+        g_node.hard_stop_latched ? 1 : 0,
+        g_node.escape_request_pending ? 1 : 0,
+        (double)g_node.front_unclipped_clearance_this_tick,
+        (double)g_node.diag_side_clear_left,
+        (double)g_node.diag_side_clear_right,
+        g_node.front_safety_candidates_this_tick,
+        g_node.front_safety_hits_this_tick);
+      g_last_dwa_chain_diag_time = rm_now_sec();
     }
     if (published) {
       const float theta_joy_rad =

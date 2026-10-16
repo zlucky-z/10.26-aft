@@ -42,8 +42,6 @@ static const char *const kKeyNeutralBefore = "dns:neutral_before";
 static const char *const kKeyNeutralDone = "dns:neutral_done";
 static const char *const kKeyFrontEscape = "dns:front_escape";
 static const char *const kKeyFrontHardStop = "dns:front_hard_stop";
-static const char *const kKeySideHardStop = "dns:side_hard_stop";
-static const char *const kKeySideReverseEscape = "dns:side_reverse_escape";
 static const char *const kKeySideReverseStop = "dns:side_reverse_stop";
 static const char *const kKeyReverseBypass = "dns:reverse_bypass";
 static const char *const kKeyTurnSpeedGuard = "dns:turn_speed_guard";
@@ -451,9 +449,11 @@ static void publish_hall_speed_control(
   message.data[5] = (float)node->output_effective_gear;
   message.data[6] = node->output_gear_closed_loop_active ? 1.0f : 0.0f;
   message.data[7] = hard_stop ? 1.0f : 0.0f;
+  message.escape_request = node->escape_request_pending ? 1 : 0;
   if (node->cmd_sink != NULL) {
     node->cmd_sink(node->cmd_sink_user_data, &node->last_published_cmd, &message);
   }
+  node->escape_request_pending = false;
 }
 
 /* publish_regular_command(output, ...) 直译。 */
@@ -540,91 +540,6 @@ static void reset_hard_stop_escape_state(dwa_node_t *node)
   node->hard_stop_escape_direction_latched_sec = (double)NAN;
 }
 
-/* hard_stop_escape_direction_clear(direction, side_clearance) 直译。 */
-static bool hard_stop_escape_direction_clear(
-  const dwa_node_t *node,
-  planner_manual_turn_direction_t direction,
-  const planner_side_clearance_diagnostics_t *side_clearance)
-{
-  const float value = direction == PLANNER_TURN_LEFT ?
-    side_clearance->left : side_clearance->right;
-  return direction != PLANNER_TURN_NONE &&
-    !isnan(value) &&
-    value >= node->params_snapshot.front_hard_stop_escape_min_clearance;
-}
-
-/* select_hard_stop_escape_direction(side_clearance) 直译。 */
-static dwa_front_escape_decision_t select_hard_stop_escape_direction(
-  dwa_node_t *node,
-  const planner_side_clearance_diagnostics_t *side_clearance)
-{
-  const double now_sec = dwa_node_now_sec();
-  const dwa_planner_params_t *p = &node->params_snapshot;
-  dwa_front_escape_decision_t result = dwa_front_escape_decision_default();
-  dwa_front_escape_decision_t instant;
-
-  if (!isfinite(node->hard_stop_escape_started_sec)) {
-    node->hard_stop_escape_started_sec = now_sec;
-  }
-  if (now_sec - node->hard_stop_escape_started_sec <
-    (double)p->stop_escape_trigger_sec)
-  {
-    return result;
-  }
-
-  if (node->hard_stop_escape_last_active_tick + 1 != node->tick_count) {
-    node->hard_stop_escape_eval_cycles = 0;
-    node->hard_stop_escape_direction = PLANNER_TURN_NONE;
-  }
-  node->hard_stop_escape_last_active_tick = node->tick_count;
-  if (node->hard_stop_escape_eval_cycles < 2) {
-    ++node->hard_stop_escape_eval_cycles;
-  }
-
-  instant = dwa_choose_hard_stop_escape_direction(
-    side_clearance, p->front_hard_stop_escape_enabled,
-    p->front_hard_stop_escape_min_clearance);
-  /* 9.28 Fix I（用户选方案 A）：逃逸方向滞回。
-   * 80cm 通道两侧净距 0.05~0.14 恰横跨 min_clearance(0.10) 阈值，
-   * instant 方向随净距噪声逐 tick 翻转（083411 日志 v=0、w=-0.5/+0.5
-   * 交替实锤）。锁定方向后 2 秒滞回窗口内只允许两种换向：
-   * ①锁存侧净距跌破硬地板 0.03m（几乎贴墙，继续转必撞）；
-   * ②窗口到期。锁存侧净距落在 [0.03, 0.10) 区间时 instant 被忽略，
-   * result 维持 not-allowed，发布层自然回退"保留线速度仅取消危险
-   * 转向"（w=0），不再左右翻转。 */
-  {
-    bool switch_allowed;
-    if (node->hard_stop_escape_direction == PLANNER_TURN_NONE) {
-      switch_allowed = true;
-    } else {
-      const float latched_clearance =
-        node->hard_stop_escape_direction == PLANNER_TURN_LEFT ?
-        side_clearance->left : side_clearance->right;
-      const bool latched_touching =
-        !isnan(latched_clearance) && latched_clearance < 0.03f;
-      const bool hold_expired =
-        !isfinite(node->hard_stop_escape_direction_latched_sec) ||
-        now_sec - node->hard_stop_escape_direction_latched_sec >= 2.0;
-      switch_allowed = latched_touching || hold_expired;
-    }
-    if (instant.allowed && switch_allowed) {
-      if (node->hard_stop_escape_direction != instant.direction) {
-        node->hard_stop_escape_direction = instant.direction;
-        node->hard_stop_escape_direction_latched_sec = now_sec;
-      }
-    }
-  }
-
-  if (node->hard_stop_escape_direction != PLANNER_TURN_NONE &&
-    hard_stop_escape_direction_clear(
-      node, node->hard_stop_escape_direction, side_clearance))
-  {
-    result.allowed = true;
-    result.direction = node->hard_stop_escape_direction;
-  }
-  return result;
-}
-
 /* limit_near_obstacle_yawrate(yawrate, nearby_obstacle) 直译。 */
 static float limit_near_obstacle_yawrate(
   const dwa_node_t *node, float yawrate, bool nearby_obstacle)
@@ -683,33 +598,21 @@ bool dns_publish_motion_command_safely(
     return true;
   }
 
-  /* 侧方硬停止同样使用左右净距决定脱困方向；两侧都被堵时
-   * 保持原有硬停止。该分支只在侧扫掠已经判定为 stop 时进入。 */
-  if (side_clearance != NULL) {
-    const dwa_front_escape_decision_t escape =
-      select_hard_stop_escape_direction(node, side_clearance);
-    if (escape.allowed) {
-      dwa_twist_t escape_command;
-      dwa_twist_reset(&escape_command);
-      escape_command.linear_x = command.v < -p->deadband_linear ?
-        command.v : p->front_hard_stop_escape_linear_speed;
-      escape_command.angular_z = escape.direction == PLANNER_TURN_LEFT ?
-        p->front_hard_stop_escape_yawrate : -p->front_hard_stop_escape_yawrate;
-      dns_record_hard_stop_escape_event(
-        node, "SIDE_SWEEP", escape.direction, side_clearance);
-      dns_publish_regular_command(node, &escape_command, false, mode, false);
-      hal_log_throttle(hal_steady_now_sec(), 250, kKeySweepEscape,
-        HAL_LOG_WARN,
-        "side sweep hard stop escape direction=%s cycle=%d/%d "
-        "side_clear(L=%.3f,R=%.3f) requested(v=%.3f,w=%+.3f) "
-        "out(v=%.3f,w=%+.3f)",
-        manual_turn_direction_name(escape.direction),
-        node->hard_stop_escape_eval_cycles, 2,
-        side_clearance->left, side_clearance->right,
-        command.v, command.w,
-        escape_command.linear_x, escape_command.angular_z);
-      return true;
-    }
+  /* DWA 只报告侧向硬停止脱困请求；安全方向与输出统一交由电机桥模块决定。 */
+  if (side_clearance != NULL && command.v > p->deadband_linear) {
+    dwa_twist_t stop;
+    dwa_twist_reset(&stop);
+    node->last_output_linear = 0.0f;
+    node->escape_request_pending = true;
+    dns_record_hard_stop_escape_event(
+      node, "SIDE_SWEEP", PLANNER_TURN_NONE, side_clearance);
+    dns_publish_command_without_trajectory(node, &stop, false, mode, true);
+    hal_log_throttle(hal_steady_now_sec(), 250, kKeySweepEscape,
+      HAL_LOG_WARN,
+      "side sweep hard stop escape delegated to motor bridge "
+      "side_clear(L=%.3f,R=%.3f) requested(v=%.3f,w=%+.3f)",
+      side_clearance->left, side_clearance->right, command.v, command.w);
+    return true;
   }
   /* 侧扫掠保护不做跨周期锁存：后退保持原有旁路，前进时只取消朝障碍侧的转向。
    * 这里必须依据最终待发布的 command.v，而不是 manual_intent.v：DWA接管时
@@ -759,25 +662,17 @@ bool dns_publish_motion_command_safely(
       dwa_twist_t stop;
       dwa_twist_reset(&stop);
       node->last_output_linear = 0.0f;
+      node->escape_request_pending = true;
+      dns_record_hard_stop_escape_event(
+        node, "SIDE_SWEEP", PLANNER_TURN_NONE, side_clearance);
       dns_publish_regular_command(node, &stop, false, mode, true);
-    }
-    {
-      const float actual_yawrate = motor_feedback->fresh ?
-        (motor_feedback->right_mps - motor_feedback->left_mps) /
-        p->side_hard_stop_wheel_track_m : 0.0f;
-      hal_log_throttle(hal_steady_now_sec(), 200, kKeySweepHardStop,
+      hal_log_throttle(hal_steady_now_sec(), 250, kKeySweepHardStop,
         HAL_LOG_ERROR,
-        "side sweep hard stop source=%s direction=%s side=%s "
-        "predicted_t=%.2fs radius=%.3fm limit=%.3fm point=(%.3f,%.3f) "
-        "requested(v=%.3f,w=%+.3f) actual_w=%+.3f wheels(L=%.3f,R=%.3f)",
-        source, manual_turn_direction_name(guard.direction),
-        dwa_side_wall_hold_side_name(guard.side),
-        guard.prediction_time_sec, guard.radius,
-        p->side_hard_stop_circle_radius,
-        guard.point.x, guard.point.y, command.v, command.w, actual_yawrate,
-        motor_feedback->left_mps, motor_feedback->right_mps);
+        "side sweep hard stop; escape request delegated to bridge "
+        "side_clear(L=%.3f,R=%.3f)",
+        side_clearance->left, side_clearance->right);
     }
-    return false;
+    return true;
   }
 }
 
@@ -823,6 +718,7 @@ bool dns_handle_manual_bypass(
   const dwa_dynamic_velocity_config_t *dc = &node->dynamic_config;
   dwa_twist_t output;
   dwa_side_safety_config_t sconfig = side_safety_config(node);
+  (void)nearest_radar_distance;
   planner_side_hard_stop_decision_t side_hard_stop;
   bool forward_hard_stop;
   bool front_no_turn_hard_stop;
@@ -912,99 +808,53 @@ bool dns_handle_manual_bypass(
   if (forward_hard_stop_active ||
     (side_hard_stop_active && raw_intent->v >= -p->deadband_linear))
   {
-    const dwa_front_escape_decision_t escape =
-      select_hard_stop_escape_direction(node, side_clearance);
     dwa_dynamic_velocity_fusion_reset(&node->dynamic_fusion);
     dwa_side_wall_hold_controller_reset(&node->side_wall_hold_controller);
     dwa_node_reset_planning_control(node);
     node->forced_straight_active = false;
-    if (escape.allowed) {
-      output.linear_x = 0.0f;
-      output.angular_z = escape.direction == PLANNER_TURN_LEFT ?
-        p->front_hard_stop_escape_yawrate : -p->front_hard_stop_escape_yawrate;
-      node->last_output_linear = output.linear_x;
-      dns_record_hard_stop_escape_event(
-        node, forward_hard_stop_active ? "FRONT" : "SIDE",
-        escape.direction, side_clearance);
-      dns_publish_command_without_trajectory(node, &output, false,
-        DYNAMIC_CONTROL_HAND, false);
-      hal_log_throttle(hal_steady_now_sec(), 250, kKeyFrontEscape,
-        HAL_LOG_WARN,
-        "hard stop escape type=%s direction=%s cycle=%d/%d "
-        "side_clear(L=%.3f,R=%.3f) out(v=%.3f,w=%+.3f)",
-        forward_hard_stop_active ? "FRONT" : "SIDE",
-        manual_turn_direction_name(escape.direction),
-        node->hard_stop_escape_eval_cycles, 2,
-        side_clearance->left, side_clearance->right,
-        output.linear_x, output.angular_z);
-      return true;
-    }
-
     node->last_output_linear = 0.0f;
-    dns_publish_command_without_trajectory(
-      node, &output, false, DYNAMIC_CONTROL_HAND, true);
-    if (forward_hard_stop_active) {
+    {
+      const bool request_escape = raw_intent->v > p->deadband_linear;
+      if (request_escape) {
+        node->escape_request_pending = true;
+        dns_record_hard_stop_escape_event(
+          node, forward_hard_stop_active ? "FRONT" : "SIDE",
+          PLANNER_TURN_NONE, side_clearance);
+        hal_log_throttle(hal_steady_now_sec(), 250, kKeyFrontEscape,
+          HAL_LOG_WARN,
+          "hard stop escape delegated type=%s side_clear(L=%.3f,R=%.3f)",
+          forward_hard_stop_active ? "FRONT" : "SIDE",
+          side_clearance->left, side_clearance->right);
+      }
+      dns_publish_command_without_trajectory(
+        node, &output, false, DYNAMIC_CONTROL_HAND, request_escape);
+    }
+    if (raw_intent->v <= p->deadband_linear && forward_hard_stop_active) {
       hal_log_throttle(hal_steady_now_sec(), 250, kKeyFrontHardStop,
         HAL_LOG_ERROR,
-        "前方硬停止：前方净距=%.3fm 前方最近雷达=%.3fm "
-        "全局最近雷达=%.3fm 阈值=%.3fm 原始意图(v=%.2f,w=%+.2f) "
-        "side_clear(L=%.3f,R=%.3f) 脱困=不可用，最终输出(v=0.00,w=0.00)",
-        front_clearance, front_nearest_radar_distance,
-        nearest_radar_distance, p->radar_contact_distance,
-        raw_intent->v, raw_intent->w,
-        side_clearance->left, side_clearance->right);
-    } else {
-      hal_log_throttle(hal_steady_now_sec(), 250, kKeySideHardStop,
-        HAL_LOG_ERROR,
-        "侧方硬停止：side=%s radius=%.3fm limit=%.3fm "
-        "side_clear(L=%.3f,R=%.3f) 脱困=不可用，最终输出(v=0.00,w=0.00)",
-        dwa_side_wall_hold_side_name(side_hard_stop.side),
-        side_hard_stop.radius, p->side_hard_stop_circle_radius,
-        side_clearance->left, side_clearance->right);
+        "front hard stop: no live forward intent; escape not requested "
+        "front_clear=%.3f side_clear(L=%.3f,R=%.3f)",
+        front_clearance, side_clearance->left, side_clearance->right);
     }
     return true;
   }
 
-  if (side_hard_stop_active && raw_intent->v < -p->deadband_linear)
-  {
-    const dwa_front_escape_decision_t escape =
-      select_hard_stop_escape_direction(node, side_clearance);
+  if (side_hard_stop_active && raw_intent->v < -p->deadband_linear) {
     dwa_dynamic_velocity_fusion_reset(&node->dynamic_fusion);
     dwa_side_wall_hold_controller_reset(&node->side_wall_hold_controller);
     dwa_node_reset_planning_control(node);
     node->forced_straight_active = false;
-    if (escape.allowed) {
-      output.linear_x = 0.0f;
-      output.angular_z = escape.direction == PLANNER_TURN_LEFT ?
-        p->front_hard_stop_escape_yawrate : -p->front_hard_stop_escape_yawrate;
-      node->last_output_linear = output.linear_x;
-      dns_record_hard_stop_escape_event(
-        node, "SIDE_REVERSE", escape.direction, side_clearance);
-      dns_publish_command_without_trajectory(node, &output, false,
-        DYNAMIC_CONTROL_HAND, false);
-      hal_log_throttle(hal_steady_now_sec(), 250, kKeySideReverseEscape,
-        HAL_LOG_WARN,
-        "side hard stop reverse escape direction=%s cycle=%d/%d "
-        "side_clear(L=%.3f,R=%.3f) out(v=%.3f,w=%+.3f)",
-        manual_turn_direction_name(escape.direction),
-        node->hard_stop_escape_eval_cycles, 2,
-        side_clearance->left, side_clearance->right,
-        output.linear_x, output.angular_z);
-      return true;
-    }
-
     node->last_output_linear = 0.0f;
     dns_publish_command_without_trajectory(
       node, &output, false, DYNAMIC_CONTROL_HAND, true);
     hal_log_throttle(hal_steady_now_sec(), 250, kKeySideReverseStop,
       HAL_LOG_ERROR,
-      "侧方硬停止倒车：side=%s radius=%.3fm limit=%.3fm "
-      "side_clear(L=%.3f,R=%.3f) 脱困=不可用，最终输出(v=0.00,w=0.00)",
-      dwa_side_wall_hold_side_name(side_hard_stop.side),
-      side_hard_stop.radius, p->side_hard_stop_circle_radius,
+      "side hard stop reverse: remain stopped; no forward escape request "
+      "side_clear(L=%.3f,R=%.3f)",
       side_clearance->left, side_clearance->right);
     return true;
   }
+
   if (raw_intent->v < -p->deadband_linear) {
     dwa_dynamic_velocity_fusion_reset(&node->dynamic_fusion);
     dwa_side_wall_hold_controller_reset(&node->side_wall_hold_controller);

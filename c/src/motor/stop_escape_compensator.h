@@ -22,12 +22,15 @@ typedef enum {
 
 typedef struct {
   int active;
+  int command_enabled;
+  int yield_to_dwa;
   double yawrate;
   se_direction_t direction;
   double left_clearance;
   double right_clearance;
-  const char *reason; /* 字面量：conditions_not_met / waiting_stop_hold /
-                         no_safe_side / escaping */
+  const char *reason; /* conditions_not_met / waiting_stop_hold /
+                         no_safe_side / escaping / paused_cloud_stale /
+                         paused_no_safe_side / recovered */
 } se_stop_escape_decision_t;
 
 typedef struct {
@@ -50,8 +53,15 @@ typedef struct {
   double cloud_time;
   double left_clearance;
   double right_clearance;
+  se_direction_t front_obstacle_away_direction;
   double stop_since;
+  double recovery_since;
+  double forward_command_since;
+  double handoff_since;
+  double forward_motion_since;
+  int handoff_active;
   se_direction_t direction;
+  se_direction_t last_direction;
   int active;
 } se_stop_escape_compensator_t;
 
@@ -79,7 +89,9 @@ se_stop_escape_decision_t se_stop_escape_compensator_update(
   int controller_neutral,
   int forward_intent,
   int vehicle_stopped,
-  int normal_output_stopped);
+  int normal_output_stopped,
+  int positive_dwa_command,
+  int positive_forward_motion);
 
 double se_stop_escape_compensator_left_clearance(
   const se_stop_escape_compensator_t *c);

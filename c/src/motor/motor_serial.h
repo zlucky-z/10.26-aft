@@ -91,7 +91,9 @@ int ms_serial_writer_open(
   char *err, size_t err_size);
 
 /* 写帧（dry_run 直接返回）。 */
-void ms_serial_writer_write(ms_serial_writer_t *w, const mp_frame_t *frame);
+/* Returns bytes written, -1 on write error, or -2 in dry-run/Windows mode. */
+long ms_serial_writer_write(ms_serial_writer_t *w, const mp_frame_t *frame,
+  int *error_out);
 
 /* 读取并解析反馈样本；返回样本数（dry_run / 未打开 → 0）。 */
 int ms_serial_writer_read_samples(

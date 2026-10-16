@@ -216,7 +216,7 @@ void dnp_reset_occupancy_grid(const dwa_node_t *node, dwa_occupancy_grid_t *grid
 /* 物理侧距按 base_link 点的位置判断，不按 source 归属。
  * 内向安装时，对侧雷达可能是某一物理侧墙的唯一观测者；若继续使用
  * 雷达局部角窗，跨车体墙点会被当成非本侧点而从侧距中消失。 */
-static bool dnp_inside_physical_side_sector(
+bool dnp_inside_physical_side_sector(
   const dwa_node_t *node, const dwa_point_t *point)
 {
   const dwa_planner_params_t *p = &node->params_snapshot;
@@ -224,6 +224,11 @@ static bool dnp_inside_physical_side_sector(
   const float side_detection_angle_deg = p->side_detection_angle_deg;
   const float angle_deg = normalize_angle_deg(
     atan2f(point->y, point->x) * 180.0f / NODE_PI);
+  /* Forward-facing corner returns belong to front clearance, not side range.
+   * Otherwise a frontal wall just outside toe width appears as a 5-10 cm side
+   * obstacle and can incorrectly activate side-hold/speed limiting. */
+  if (point->x > 0.0f &&
+    fabsf(point->y) < 0.50f * fabsf(point->x)) return false;
   const float side_lookahead =
     node->dynamic_config.moving_prebrake_base_distance +
     node->dynamic_config.forward_speed_limit *

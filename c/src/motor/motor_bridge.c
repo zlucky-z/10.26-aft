@@ -27,6 +27,25 @@
 
 /* M_PI 值（math.h 在严格 ISO C 下可能不暴露 M_PI，自给同值字面量） */
 #define MB_PI_D 3.14159265358979323846
+#define MB_IMU_TIMEOUT_SEC 1.0
+
+static int mb_sensor_fault_mask(mb_bridge_t *b, double now)
+{
+  int mask = 0;
+  if (b->left_scan_time <= 0.0 ||
+      now - b->left_scan_time > b->config.radar_timeout) {
+    mask |= MP_SENSOR_STATUS_LEFT_RADAR_FAULT;
+  }
+  if (b->right_scan_time <= 0.0 ||
+      now - b->right_scan_time > b->config.radar_timeout) {
+    mask |= MP_SENSOR_STATUS_RIGHT_RADAR_FAULT;
+  }
+  if (!b->valid_imu_seen || b->last_valid_imu_time <= 0.0 ||
+      now - b->last_valid_imu_time > MB_IMU_TIMEOUT_SEC) {
+    mask |= MP_SENSOR_STATUS_IMU_FAULT;
+  }
+  return mask;
+}
 
 /* —— 小工具 —— */
 
@@ -85,13 +104,58 @@ static void mb_sleep_ms(mb_bridge_t *b, double milliseconds)
 #endif
 }
 
-/* writer_.write() 直译 + 观测钩子 */
-static void mb_writer_write(mb_bridge_t *b, const mp_frame_t *frame)
+static int mb_controller_feedback_is_online(mb_bridge_t *b, double now)
 {
-  ms_serial_writer_write(&b->writer, frame);
+  const double age = now - b->controller_feedback_last_valid_time;
+  const int online = age < 1.0;
+  if (online != b->controller_feedback_online) {
+    b->controller_feedback_online = online;
+    hal_log(online ? HAL_LOG_INFO : HAL_LOG_WARN,
+      "controller_feedback_link %s age=%.3fs valid_frames_seen=%d; serial TX %s",
+      online ? "ONLINE" : "OFFLINE", age, b->controller_feedback_seen,
+      online ? "resumed" : "paused");
+  }
+  return online;
+}
+
+/* writer_.write() 直译 + 观测钩子；所有发帧路径统一受反馈在线状态门控。 */
+static long mb_writer_write(mb_bridge_t *b, const mp_frame_t *frame)
+{
+  int write_errno = 0;
+  const double now = mb_now(b);
+  long written;
+  if (!mb_controller_feedback_is_online(b, now)) {
+    ++b->tx_attempt_count;
+    b->tx_last_result = -3; /* 反馈离线，软件主动抑制发送 */
+    b->tx_last_errno = 0;
+    b->tx_last_time = now;
+    return -3;
+  }
+  written = ms_serial_writer_write(&b->writer, frame, &write_errno);
+  ++b->tx_attempt_count;
+  b->tx_last_result = written;
+  b->tx_last_errno = write_errno;
+  b->tx_last_time = now;
+  if (written == (long)frame->len) {
+    ++b->tx_full_count;
+  } else if (written != -2) {
+    ++b->tx_fail_count;
+    if (now - b->last_tx_error_log_time >= 1.0 ||
+        b->last_tx_error_log_time == 0.0) {
+      char hex[MP_FRAME_HEX_MAX];
+      mp_frame_hex(frame, hex);
+      hal_log(HAL_LOG_ERROR,
+        "motor_tx_error bytes=%ld expected=%zu errno=%d attempts=%llu failures=%llu frame=%s",
+        written, frame->len, write_errno,
+        (unsigned long long)b->tx_attempt_count,
+        (unsigned long long)b->tx_fail_count, hex);
+      b->last_tx_error_log_time = now;
+    }
+  }
   if (b->inject.frame_sink != NULL) {
     b->inject.frame_sink(b->inject.frame_sink_user, frame);
   }
+  return written;
 }
 
 /* read_float：大端 FLOAT32/FLOAT64 → double（__builtin_bswap 语义直译） */
@@ -133,6 +197,8 @@ static int mb_read_float(const uint8_t *p, int size, int big_endian,
 static se_point_t *g_escape_points = NULL;
 static size_t g_escape_points_cap = 0;
 
+static void mb_reset_escape_yaw_control(mb_bridge_t *b);
+
 static se_point_t *escape_points_reserve(size_t count)
 {
   if (count > g_escape_points_cap) {
@@ -172,6 +238,9 @@ int mb_bridge_init(mb_bridge_t *b, const mb_config_t *config_in,
     snprintf(err, err_size, "%s", serial_err);
     return -1;
   }
+  b->controller_feedback_last_valid_time = mb_now(b);
+  b->controller_feedback_online = 1; /* 首秒宽限，避免初始化阶段误判离线 */
+  b->sensor_fault_last_mask = -1;
   se_stop_escape_compensator_init(&b->stop_escape,
     config->escape_stop_hold_sec, config->escape_stop_speed,
     config->escape_turn_yawrate, config->escape_cloud_timeout,
@@ -244,6 +313,7 @@ int mb_bridge_init(mb_bridge_t *b, const mb_config_t *config_in,
   b->last_raw_frame_log_time = 0.0;
   b->stop_frame.len = 0;
   b->stop_escape_last_decision.active = 0;
+  b->stop_escape_last_decision.command_enabled = 0;
   b->stop_escape_last_decision.yawrate = 0.0;
   b->stop_escape_last_decision.direction = SE_DIRECTION_NONE;
   b->stop_escape_last_decision.left_clearance = INFINITY;
@@ -251,6 +321,19 @@ int mb_bridge_init(mb_bridge_t *b, const mb_config_t *config_in,
   b->stop_escape_last_decision.reason = "";
   b->stop_escape_event_count = 0;
   b->stop_escape_event_active = 0;
+  b->dwa_escape_request = 0;
+  b->dwa_escape_request_time = 0.0;
+  b->escape_imu_yaw_rate = 0.0;
+  b->escape_imu_time = 0.0;
+  b->escape_imu_valid = 0;
+  b->escape_yaw_integral = 0.0;
+  b->escape_yaw_output = 0.0;
+  b->escape_yaw_direction = SE_DIRECTION_NONE;
+  b->escape_yaw_diag_target = 0.0;
+  b->escape_yaw_diag_actual = 0.0;
+  b->escape_yaw_diag_output = 0.0;
+  b->escape_yaw_last_update_time = 0.0;
+  b->escape_last_diag_log_time = 0.0;
 
   /* 发布器开关（topic 非空 = publisher 存在） */
   b->controller_cmd_pub = (config->controller_cmd_topic[0] != '\0');
@@ -495,6 +578,33 @@ void mb_on_escape_cloud(mb_bridge_t *b, const mb_cloud_view_t *cloud)
   }
 }
 
+void mb_on_escape_request(mb_bridge_t *b, int requested)
+{
+  b->dwa_escape_request = requested ? 1 : 0;
+  b->dwa_escape_request_time = requested ? mb_now(b) : 0.0;
+}
+
+void mb_on_escape_imu_yawrate(mb_bridge_t *b, double yawrate, int valid)
+{
+  const double now = mb_now(b);
+  b->escape_imu_yaw_rate = isfinite(yawrate) ? yawrate : 0.0;
+  b->escape_imu_valid = valid && isfinite(yawrate) ? 1 : 0;
+  b->escape_imu_time = now;
+  if (b->escape_imu_valid) {
+    b->last_valid_imu_time = now;
+    b->valid_imu_seen = 1;
+  }
+}
+
+void mb_bridge_enable_sensor_interlock(mb_bridge_t *b, int enabled)
+{
+  b->sensor_interlock_enabled = enabled ? 1 : 0;
+  b->sensor_fault_last_mask = -1;
+  hal_log(HAL_LOG_WARN, "sensor_interlock enabled=%d imu_timeout=%.2fs "
+    "radar_timeout=%.2fs status_bits=(left:0x01,right:0x02,imu:0x04)",
+    b->sensor_interlock_enabled, MB_IMU_TIMEOUT_SEC, b->config.radar_timeout);
+}
+
 void mb_on_left_scan(mb_bridge_t *b)
 {
   b->left_scan_time = mb_now(b);
@@ -545,11 +655,11 @@ int mb_radar_status(mb_bridge_t *b, double now)
   status = 0;
   if (b->left_scan_time <= 0.0 ||
       now - b->left_scan_time > b->config.radar_timeout) {
-    status |= 0x01;
+    status |= MP_SENSOR_STATUS_LEFT_RADAR_FAULT;
   }
   if (b->right_scan_time <= 0.0 ||
       now - b->right_scan_time > b->config.radar_timeout) {
-    status |= 0x02;
+    status |= MP_SENSOR_STATUS_RIGHT_RADAR_FAULT;
   }
   return status;
 }
@@ -610,7 +720,12 @@ double mb_y_scale_reference_now(mb_bridge_t *b)
 mp_frame_t mb_build_output_frame(mb_bridge_t *b, int x, int y)
 {
   const double now = mb_now(b);
-  return mp_build_frame(x, y, mb_radar_status(b, now), b->gyro_angle_byte,
+  int sensor_status = mb_radar_status(b, now);
+  if (b->sensor_interlock_enabled &&
+      (mb_sensor_fault_mask(b, now) & MP_SENSOR_STATUS_IMU_FAULT)) {
+    sensor_status |= MP_SENSOR_STATUS_IMU_FAULT;
+  }
+  return mp_build_frame(x, y, sensor_status, b->gyro_angle_byte,
     mb_current_output_gear(b), mb_horn_active(b, now), b->config.protocol);
 }
 
@@ -770,7 +885,9 @@ void mb_update_wheel_feedback(mb_bridge_t *b, const ms_sample_t *sample)
     b->wheel_left_mps = alpha * left_mps + (1.0 - alpha) * b->wheel_left_mps;
     b->wheel_right_mps = alpha * right_mps + (1.0 - alpha) * b->wheel_right_mps;
   }
-  b->last_wheel_feedback_time = sample->time;
+  /* sample->time is system CLOCK_MONOTONIC; bridge timers use process-relative mb_now().
+   * Stamp receipt in the bridge clock domain to keep freshness comparisons valid. */
+  b->last_wheel_feedback_time = mb_now(b);
   b->actual_linear = 0.5 * (b->wheel_left_mps + b->wheel_right_mps);
   b->actual_yaw_rate = (b->wheel_right_mps - b->wheel_left_mps) /
     b->config.wheel_track_m;
@@ -905,7 +1022,11 @@ void mb_clear_motion_state_for_controller_neutral(mb_bridge_t *b)
   mb_reset_closed_loop_state(b);
   mb_reset_intervention_slew_state(b);
   se_stop_escape_compensator_reset(&b->stop_escape);
+  b->dwa_escape_request = 0;
+  b->dwa_escape_request_time = 0.0;
+  mb_reset_escape_yaw_control(b);
   b->stop_escape_last_decision.active = 0;
+  b->stop_escape_last_decision.command_enabled = 0;
   b->stop_escape_last_decision.yawrate = 0.0;
   b->stop_escape_last_decision.direction = SE_DIRECTION_NONE;
   b->stop_escape_last_decision.left_clearance = INFINITY;
@@ -919,6 +1040,15 @@ void mb_publish_sample(mb_bridge_t *b, const ms_sample_t *sample)
   const int is_status = (sample->kind == MS_SAMPLE_KIND_STATUS);
   const int is_drive_or_status =
     (sample->kind == MS_SAMPLE_KIND_DRIVE || is_status);
+
+  /* 只有串口解析器校验并产出的有效 drive/status 帧才刷新在线计时；
+   * 原始字节、坏 CRC、未知帧不会让控制器被误判为在线。 */
+  if (is_drive_or_status) {
+    b->controller_feedback_last_valid_time = mb_now(b);
+    b->controller_feedback_seen = 1;
+    (void)mb_controller_feedback_is_online(b,
+      b->controller_feedback_last_valid_time);
+  }
 
   if (is_status) {
     mb_update_wheel_feedback(b, sample);
@@ -1519,23 +1649,124 @@ mb_write_decision_t mb_should_write_intervention(mb_bridge_t *b, double now,
   return d;
 }
 
+static int mb_physical_forward_intent(mb_bridge_t *b, double now)
+{
+  double dy;
+  if (b->last_controller_sample_time <= 0.0 ||
+      now - b->last_controller_sample_time > b->config.cmd_timeout) {
+    return 0;
+  }
+  dy = mb_controller_axis_delta(b, b->last_controller_y,
+    b->config.controller_center_y, b->config.controller_dead_low,
+    b->config.controller_dead_high, b->config.controller_invert_y);
+  return dy > 0.0;
+}
+
+static void mb_reset_escape_yaw_control(mb_bridge_t *b)
+{
+  b->escape_yaw_integral = 0.0;
+  b->escape_yaw_output = 0.0;
+  b->escape_yaw_direction = SE_DIRECTION_NONE;
+  b->escape_yaw_diag_target = 0.0;
+  b->escape_yaw_diag_actual = 0.0;
+  b->escape_yaw_diag_output = 0.0;
+  b->escape_yaw_last_update_time = 0.0;
+}
+
+static double mb_escape_yaw_command(mb_bridge_t *b,
+  se_direction_t direction, double now)
+{
+  const int imu_fresh = b->escape_imu_valid && b->escape_imu_time > 0.0 &&
+    now >= b->escape_imu_time && now - b->escape_imu_time <= 0.25;
+  const double sign = direction == SE_DIRECTION_LEFT ? 1.0 : -1.0;
+  const double target = sign * fabs(b->config.escape_turn_yawrate);
+  double output = target;
+  double dt = b->escape_yaw_last_update_time > 0.0 ?
+    now - b->escape_yaw_last_update_time : 0.0;
+
+  if (b->escape_yaw_direction != direction) {
+    mb_reset_escape_yaw_control(b);
+    b->escape_yaw_direction = direction;
+    dt = 0.0;
+  }
+  if (dt < 0.0 || dt > 0.10) dt = 0.0;
+  b->escape_yaw_last_update_time = now;
+  b->escape_yaw_diag_target = target;
+  b->escape_yaw_diag_actual = imu_fresh ? b->escape_imu_yaw_rate : 0.0;
+
+  if (imu_fresh) {
+    const double error = target - b->escape_imu_yaw_rate;
+    const double kp = 0.80;
+    const double ki = 0.35;
+    const double integral_limit = 0.25;
+    const double output_limit = 0.90;
+    double wanted;
+    b->escape_yaw_integral += ki * error * dt;
+    b->escape_yaw_integral = mp_clamp_double(
+      b->escape_yaw_integral, -integral_limit, integral_limit);
+    wanted = target + kp * error + b->escape_yaw_integral;
+    wanted = mp_clamp_double(wanted, -output_limit, output_limit);
+    /* Bound output slew so newly accumulated compensation cannot release as a jerk. */
+    if (dt > 0.0 && b->escape_yaw_output != 0.0) {
+      const double max_step = 2.0 * dt;
+      output = b->escape_yaw_output +
+        mp_clamp_double(wanted - b->escape_yaw_output, -max_step, max_step);
+    } else {
+      output = wanted;
+    }
+  } else {
+    /* Invalid/stale IMU clears compensation immediately; retain only the safe base turn. */
+    b->escape_yaw_integral = 0.0;
+    output = target;
+  }
+  b->escape_yaw_output = output;
+  b->escape_yaw_diag_output = output;
+  if (now - b->escape_last_diag_log_time >= 0.20) {
+    hal_log(HAL_LOG_INFO,
+      "escape_yaw direction=%s imu_valid=%d target=%+.3f actual=%+.3f "
+      "integral=%+.3f output=%+.3f",
+      direction == SE_DIRECTION_LEFT ? "LEFT" : "RIGHT",
+      imu_fresh, target, b->escape_yaw_diag_actual,
+      b->escape_yaw_integral, output);
+    b->escape_last_diag_log_time = now;
+  }
+  return output;
+}
+
 se_stop_escape_decision_t mb_update_stop_escape(mb_bridge_t *b, double now,
   int controller_neutral_stop, int normal_output_stopped)
 {
-  const int forward_intent = mb_raw_command_is_recent(b, now) &&
-    b->last_raw_linear > b->config.escape_forward_deadband;
-  const int vehicle_stopped = mb_wheel_feedback_is_fresh(b, now) &&
+  const int physical_forward = mb_physical_forward_intent(b, now);
+  const int dwa_request_fresh = b->dwa_escape_request &&
+    b->dwa_escape_request_time > 0.0 &&
+    now >= b->dwa_escape_request_time &&
+    now - b->dwa_escape_request_time <= 0.25;
+  const int wheel_feedback_fresh = mb_wheel_feedback_is_fresh(b, now);
+  const int vehicle_stopped = wheel_feedback_fresh &&
     fabs(b->actual_linear) <= b->config.escape_stop_speed;
+  const int positive_dwa_command = b->last_cmd_time > 0.0 &&
+    now >= b->last_cmd_time &&
+    now - b->last_cmd_time <= b->config.cmd_timeout &&
+    b->last_linear > b->config.linear_deadband;
+  const int positive_forward_motion = wheel_feedback_fresh &&
+    b->actual_linear > b->config.escape_stop_speed;
+  /* Keep the maneuver latched from physical controller intent. The DWA
+   * request/fallback trigger can flicker as outputs and feedback change; that
+   * trigger is for event attribution, not the ongoing escape-enable signal.
+   * Initial activation still requires stopped wheels and stopped normal output
+   * inside the compensator, so this cannot take over ordinary movement. */
   b->stop_escape_last_decision = se_stop_escape_compensator_update(
-    &b->stop_escape, now, controller_neutral_stop, forward_intent,
-    vehicle_stopped, normal_output_stopped);
+    &b->stop_escape, now, controller_neutral_stop, physical_forward,
+    vehicle_stopped, normal_output_stopped, positive_dwa_command,
+    positive_forward_motion);
   if (b->stop_escape_last_decision.active &&
       !b->stop_escape_event_active) {
     ++b->stop_escape_event_count;
     hal_log(HAL_LOG_WARN,
-      "脱困统计 source=motor_bridge_stop_escape event=%llu "
-      "direction=%s side_clear(L=%.3f,R=%.3f)",
+      "脱困统计 source=unified_escape event=%llu trigger=%s direction=%s "
+      "side_clear(L=%.3f,R=%.3f)",
       (unsigned long long)b->stop_escape_event_count,
+      dwa_request_fresh ? "dwa_request" : "motor_bridge_stall",
       b->stop_escape_last_decision.direction == SE_DIRECTION_LEFT ?
         "LEFT" : "RIGHT",
       b->stop_escape_last_decision.left_clearance,
@@ -1543,6 +1774,17 @@ se_stop_escape_decision_t mb_update_stop_escape(mb_bridge_t *b, double now,
   }
   b->stop_escape_event_active =
     b->stop_escape_last_decision.active ? 1 : 0;
+  if (b->stop_escape_last_decision.active &&
+      b->stop_escape_last_decision.command_enabled) {
+    b->stop_escape_last_decision.yawrate = mb_escape_yaw_command(
+      b, b->stop_escape_last_decision.direction, now);
+  } else if (b->stop_escape_last_decision.active) {
+    /* Pause compensator while retaining the escape latch. */
+    mb_reset_escape_yaw_control(b);
+    b->stop_escape_last_decision.yawrate = 0.0;
+  } else {
+    mb_reset_escape_yaw_control(b);
+  }
   return b->stop_escape_last_decision;
 }
 
@@ -1562,6 +1804,7 @@ void mb_on_timer(mb_bridge_t *b)
   const double now = mb_now(b); /* C++ 在 on_timer 顶部捕获一次并贯穿使用 */
 
   mb_poll_status(b);
+  (void)mb_controller_feedback_is_online(b, now);
   {
     mb_update_wheel_yaw_total(b, now);
     controller_neutral_stop = mb_physical_controller_is_neutral(b, now);
@@ -1599,9 +1842,45 @@ void mb_on_timer(mb_bridge_t *b)
 
   normal_output_stopped = (x == MP_CENTER && y == MP_CENTER) ||
     state_ends_with_stop(state);
-  stop_escape_decision = mb_update_stop_escape(b, now,
-    controller_neutral_stop, normal_output_stopped);
-  if (stop_escape_decision.active) {
+  {
+    const int sensor_fault_mask = b->sensor_interlock_enabled
+      ? mb_sensor_fault_mask(b, now) : 0;
+    if (sensor_fault_mask != b->sensor_fault_last_mask) {
+      hal_log(sensor_fault_mask ? HAL_LOG_ERROR : HAL_LOG_INFO,
+        "sensor_interlock fault_mask=0x%02X left_radar=%d right_radar=%d "
+        "imu=%d action=%s", sensor_fault_mask,
+        (sensor_fault_mask & MP_SENSOR_STATUS_LEFT_RADAR_FAULT) != 0,
+        (sensor_fault_mask & MP_SENSOR_STATUS_RIGHT_RADAR_FAULT) != 0,
+        (sensor_fault_mask & MP_SENSOR_STATUS_IMU_FAULT) != 0,
+        sensor_fault_mask ? "FORCE_STOP" : "RELEASE");
+      b->sensor_fault_last_mask = sensor_fault_mask;
+    }
+    if (sensor_fault_mask != 0) {
+      /* A stale sensor must not let the DWA escape controller or manual
+       * bypass emit motion. Clear escape state so recovery cannot replay it. */
+      se_stop_escape_compensator_reset(&b->stop_escape);
+      b->dwa_escape_request = 0;
+      b->dwa_escape_request_time = 0.0;
+      b->stop_escape_event_active = 0;
+      b->stop_escape_last_decision.active = 0;
+      b->stop_escape_last_decision.command_enabled = 0;
+      b->stop_escape_last_decision.yawrate = 0.0;
+      b->stop_escape_last_decision.direction = SE_DIRECTION_NONE;
+      b->stop_escape_last_decision.reason = "sensor_fault";
+      stop_escape_decision = b->stop_escape_last_decision;
+      x = MP_CENTER;
+      y = MP_CENTER;
+      state_set(state, "sensor_fault_stop");
+    } else {
+      stop_escape_decision = mb_update_stop_escape(b, now,
+        controller_neutral_stop, normal_output_stopped);
+    }
+  }
+  if (stop_escape_decision.active && stop_escape_decision.yield_to_dwa) {
+    /* Trial handoff: preserve this timer's normal DWA output. The escape
+     * module retains its event/direction and will resume if motion fails. */
+    state_set(state, "stop_escape_handoff");
+  } else if (stop_escape_decision.active && stop_escape_decision.command_enabled) {
     double escape_angular = stop_escape_decision.yawrate;
     int ex, ey;
     if (b->config.invert_angular) escape_angular = -escape_angular;
@@ -1609,6 +1888,11 @@ void mb_on_timer(mb_bridge_t *b)
     x = ex;
     y = ey;
     state_set(state, "stop_escape");
+  } else if (stop_escape_decision.active) {
+    /* Retain the latch but fail safe while sensing/clearance is insufficient. */
+    x = MP_CENTER;
+    y = MP_CENTER;
+    state_set(state, "stop_escape_paused");
   }
 
   frame = mb_build_output_frame(b, x, y);
@@ -1683,12 +1967,76 @@ void mb_on_timer(mb_bridge_t *b)
     state_set(write_reason, "unchanged_idle");
   }
 
+  if (b->sensor_interlock_enabled && mb_sensor_fault_mask(b, now) != 0) {
+    x = MP_CENTER;
+    y = MP_CENTER;
+    frame = mb_build_output_frame(b, x, y);
+    is_idle_stop = 1;
+    is_motion = 0;
+    should_write = 1;
+    state_set(state, "sensor_fault_stop");
+    state_set(write_reason, "sensor_fault_stop");
+  }
+
   if (should_write) {
     mb_writer_write(b, &frame);
     b->last_written_frame = frame;
     b->intervention_motion_active = !is_idle_stop;
   }
   b->was_motion = is_motion;
+
+  /* 端到端排障：每秒一条，记录输入门控、桥输出、实际 write() 返回值。
+   * 低频采样避免测试日志持续刷写；写失败另有节流错误行。 */
+  if (now - b->last_chain_diag_time >= 1.0 ||
+      b->last_chain_diag_time == 0.0) {
+    char hex[MP_FRAME_HEX_MAX];
+    const double ctrl_age = b->last_controller_sample_time > 0.0
+      ? now - b->last_controller_sample_time : -1.0;
+    const double cmd_age = b->last_cmd_time > 0.0
+      ? now - b->last_cmd_time : -1.0;
+    const double raw_age = b->last_raw_cmd_time > 0.0
+      ? now - b->last_raw_cmd_time : -1.0;
+    const double hall_age = b->last_hall_speed_control_time > 0.0
+      ? now - b->last_hall_speed_control_time : -1.0;
+    const double wheel_age = b->last_wheel_feedback_time > 0.0
+      ? now - b->last_wheel_feedback_time : -1.0;
+    const int physical_forward = mb_physical_forward_intent(b, now);
+    const int dwa_request_fresh = b->dwa_escape_request &&
+      b->dwa_escape_request_time > 0.0 && now >= b->dwa_escape_request_time &&
+      now - b->dwa_escape_request_time <= 0.25;
+    int tx_age_ms = -1;
+    mp_frame_hex(&frame, hex);
+    if (b->tx_last_time > 0.0 && now >= b->tx_last_time) {
+      tx_age_ms = (int)((now - b->tx_last_time) * 1000.0);
+    }
+    hal_log(HAL_LOG_INFO,
+      "motor_chain t=%.3f ctrl=(%d,%d) ctrl_age=%.3f neutral=%d raw=(%.3f,%+.3f) raw_age=%.3f dwa=(%.3f,%+.3f) cmd_age=%.3f hard_stop=%d hall=(active:%d mode:%d target:%.3f age:%.3f fault:%d) wheel=(L:%.3f R:%.3f v:%.3f age:%.3f) escape=(fwd:%d dwa_req:%d pending:%d active:%d cmd:%d dir:%s reason:%s yaw:%+.3f clear:(%.3f,%.3f)) bridge=(state:%s xy:%d,%d write:%d reason:%s) frame=%s port=%s baud=%d fd=%d dry=%d feedback=(online:%d age:%.3f seen:%d) rx=(bytes:%ld frames:%ld drive:%ld status:%ld bad_crc:%ld dropped:%ld) tx=(ret:%ld errno:%d age_ms:%d attempts:%llu full:%llu fail:%llu)",
+      hal_steady_now_sec(), b->last_controller_x, b->last_controller_y,
+      ctrl_age, controller_neutral_stop, b->last_raw_linear,
+      b->last_raw_angular, raw_age, b->last_linear, b->last_angular,
+      cmd_age, b->hard_stop_active, b->hall_speed_control_active,
+      b->hall_speed_control_mode, b->hall_speed_control_target, hall_age,
+      b->hall_speed_fault_wait_neutral, b->wheel_left_mps,
+      b->wheel_right_mps, b->actual_linear, wheel_age, physical_forward,
+      dwa_request_fresh, b->dwa_escape_request,
+      stop_escape_decision.active, stop_escape_decision.command_enabled,
+      stop_escape_decision.direction == SE_DIRECTION_LEFT ? "LEFT" :
+        (stop_escape_decision.direction == SE_DIRECTION_RIGHT ? "RIGHT" : "NONE"),
+      stop_escape_decision.reason != NULL ? stop_escape_decision.reason : "",
+      stop_escape_decision.yawrate, stop_escape_decision.left_clearance,
+      stop_escape_decision.right_clearance, state, x, y, should_write,
+      write_reason, hex, b->writer.port, b->writer.baud, b->writer.fd,
+      b->writer.dry_run, b->controller_feedback_online,
+      now - b->controller_feedback_last_valid_time, b->controller_feedback_seen,
+      b->writer.rx_stats.bytes, b->writer.rx_stats.frames,
+      b->writer.rx_stats.drive, b->writer.rx_stats.status,
+      b->writer.rx_stats.bad_crc, b->writer.rx_stats.dropped,
+      b->tx_last_result, b->tx_last_errno, tx_age_ms,
+      (unsigned long long)b->tx_attempt_count,
+      (unsigned long long)b->tx_full_count,
+      (unsigned long long)b->tx_fail_count);
+    b->last_chain_diag_time = now;
+  }
 
   /* 日志（对齐 Python 的 verbose/frame change/定时日志） */
   {

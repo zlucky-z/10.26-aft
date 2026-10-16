@@ -36,6 +36,13 @@ extern "C" {
 #define MP_HALL_MODE_STATIC_DYNAMIC_DWA 4
 #define MP_HALL_MODE_SIDE_CAP 5
 
+/* Drive-frame sensor status byte (2.1/2.3/gear_horn):
+ * bit0=left radar stale, bit1=right radar stale, bit2=IMU unhealthy. */
+#define MP_SENSOR_STATUS_LEFT_RADAR_FAULT 0x01
+#define MP_SENSOR_STATUS_RIGHT_RADAR_FAULT 0x02
+#define MP_SENSOR_STATUS_IMU_FAULT 0x04
+#define MP_SENSOR_STATUS_MASK 0x07
+
 /* 协议版本（C++ 侧用字符串匹配，此处枚举；config 解析时字符串→枚举） */
 typedef enum {
   MP_PROTOCOL_20 = 0,      /* "2.0" */

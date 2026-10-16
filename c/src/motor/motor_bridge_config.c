@@ -63,7 +63,7 @@ void mb_config_defaults(mb_config_t *c)
     "/scan_right_safety");
   copy_str(c->escape_cloud_topic, sizeof(c->escape_cloud_topic),
     "/dwa/fused_scan_base");
-  c->escape_stop_hold_sec = 0.5;
+  c->escape_stop_hold_sec = 0.0;
   c->escape_stop_speed = 0.03;
   c->escape_forward_deadband = 0.02;
   c->escape_turn_yawrate = 0.5;

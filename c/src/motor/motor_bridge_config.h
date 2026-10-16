@@ -31,7 +31,7 @@ typedef struct {
   char left_scan_topic[MB_TOPIC_MAX];   /* "/scan_left_safety" */
   char right_scan_topic[MB_TOPIC_MAX];  /* "/scan_right_safety" */
   char escape_cloud_topic[MB_TOPIC_MAX]; /* "/dwa/fused_scan_base" */
-  double escape_stop_hold_sec;   /* 0.5 */
+  double escape_stop_hold_sec;   /* 0.0: start immediately once stopped */
   double escape_stop_speed;      /* 0.03 */
   double escape_forward_deadband; /* 0.02 */
   double escape_turn_yawrate;    /* 0.5 */

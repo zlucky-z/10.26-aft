@@ -117,7 +117,7 @@ mp_frame_t mp_build_frame(
   if (protocol == MP_PROTOCOL_23) {
     append_uint16_be(&data, mp_logical_coord_to_protocol((double)x));
     append_uint16_be(&data, mp_logical_coord_to_protocol((double)y));
-    data.bytes[data.len++] = (uint8_t)(radar_status & 0x03);
+    data.bytes[data.len++] = (uint8_t)(radar_status & MP_SENSOR_STATUS_MASK);
     data.bytes[data.len++] = (uint8_t)(gyro_angle & 0xFF);
     data.bytes[data.len++] = mp_pack_gear_horn(gear, 0);
   } else {
@@ -127,7 +127,7 @@ mp_frame_t mp_build_frame(
       const int extended =
         (protocol == MP_PROTOCOL_21 || protocol == MP_PROTOCOL_GEAR_HORN);
       if (extended) {
-        data.bytes[data.len++] = (uint8_t)(radar_status & 0x03);
+        data.bytes[data.len++] = (uint8_t)(radar_status & MP_SENSOR_STATUS_MASK);
         data.bytes[data.len++] = (uint8_t)(gyro_angle & 0xFF);
       }
       if (protocol == MP_PROTOCOL_GEAR_HORN) {
