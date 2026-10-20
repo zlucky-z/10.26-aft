@@ -175,6 +175,8 @@ typedef struct {
   float hard_stop_escape_direction_latched_sec;
   bool near_obstacle_gear_latched;
   float near_obstacle_gear_nearest_distance;
+  float stationary_turn_ring_speed_limit_mps;
+  float stationary_turn_ring_nearest_distance_m;
   float moving_prebrake_y_down_rate;
   float runtime_velocity_limit;
   bool runtime_velocity_limit_initialized;
@@ -231,6 +233,7 @@ typedef struct {
   bool controller_x_valid;
   int last_controller_y;
   bool controller_y_valid;
+  double last_controller_axes_time;
   int raw_gear;
   bool raw_gear_valid;
 

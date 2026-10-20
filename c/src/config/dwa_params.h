@@ -216,6 +216,12 @@ typedef struct {
   float near_obstacle_gear_radius, near_obstacle_gear_release_radius;
   int near_obstacle_gear_level;
 
+  bool stationary_turn_ring_enabled;
+  float stationary_turn_ring_outer_radius_m;
+  float stationary_turn_ring_inner_radius_m;
+  float stationary_turn_ring_forward_side_angle_deg;
+  float stationary_turn_ring_inner_speed_ratio;
+
   float moving_prebrake_reaction_sec, moving_prebrake_safety_margin;
   float moving_prebrake_y_down_rate_min, moving_prebrake_y_down_rate_max;
   float moving_prebrake_y_rate_release;
@@ -242,7 +248,8 @@ typedef struct {
   float front_hard_stop_escape_linear_speed;
   float front_hard_stop_escape_yawrate;
   float stop_escape_trigger_sec;
-  float near_obstacle_max_yawrate; /* 不在 yaml，默认 0.70 */
+  bool near_obstacle_yawrate_limit_enabled;
+  float near_obstacle_max_yawrate;
 
   bool dwa_velocity_ramp_enabled;
 

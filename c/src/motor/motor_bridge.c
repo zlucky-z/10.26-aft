@@ -2078,7 +2078,9 @@ int mb_raw_reverse_passthrough_xy(mb_bridge_t *b, double now,
   int *out_x, int *out_y, char out_state[MB_STATE_MAX])
 {
   int controller_x, controller_y;
+  int limited_controller_y;
   int angular_intervened;
+  double linear_scale;
 
   if (!mb_raw_command_is_recent(b, now)) return 0;
   if (b->last_cmd_time <= 0.0 ||
@@ -2088,12 +2090,30 @@ int mb_raw_reverse_passthrough_xy(mb_bridge_t *b, double now,
 
   controller_x = mp_clamp_coord((double)b->last_controller_x);
   controller_y = mp_clamp_coord((double)b->last_controller_y);
+  /* Keep the controller's reverse-turn X input, but apply any DWA linear
+   * speed cap to the reverse throttle axis before forwarding the frame. */
+  linear_scale = fabs(b->last_linear) / fabs(b->last_raw_linear);
+  if (linear_scale > 1.0) linear_scale = 1.0;
+  if (linear_scale < 0.0) linear_scale = 0.0;
+  limited_controller_y = mp_clamp_coord((double)lround(
+    (double)b->config.controller_center_y +
+    ((double)controller_y - (double)b->config.controller_center_y) *
+      linear_scale));
+  if (linear_scale < 0.999) {
+    static int reverse_cap_log_key;
+    hal_log_throttle(now, 500, &reverse_cap_log_key, HAL_LOG_INFO,
+      "reverse_linear_cap raw=%.3f cmd=%.3f scale=%.3f y=%d->%d",
+      b->last_raw_linear, b->last_linear, linear_scale,
+      controller_y, limited_controller_y);
+  }
   angular_intervened =
     fabs(b->last_angular - b->last_raw_angular) > b->config.angular_deadband;
   if (!angular_intervened) {
     *out_x = controller_x;
-    *out_y = controller_y;
-    state_set(out_state, "controller_reverse_passthrough");
+    *out_y = limited_controller_y;
+    state_set(out_state, linear_scale < 0.999
+      ? "controller_reverse_passthrough_limited"
+      : "controller_reverse_passthrough");
     return 1;
   }
   {
@@ -2105,8 +2125,10 @@ int mb_raw_reverse_passthrough_xy(mb_bridge_t *b, double now,
     }
     mb_motion_to_xy(b, 0.0, corrected_angular, &cx, &cy);
     *out_x = cx;
-    *out_y = controller_y;
-    state_set(out_state, "controller_reverse_safety_steer");
+    *out_y = limited_controller_y;
+    state_set(out_state, linear_scale < 0.999
+      ? "controller_reverse_safety_steer_limited"
+      : "controller_reverse_safety_steer");
     return 1;
   }
 }

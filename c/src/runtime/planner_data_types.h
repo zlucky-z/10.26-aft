@@ -168,6 +168,9 @@ typedef struct {
   float forward_speed;
   int raw_gear;
   bool raw_gear_valid;
+  int controller_x;
+  int controller_y;
+  bool controller_axes_valid;
   bool valid;
   bool fresh;
   float age;
@@ -183,6 +186,9 @@ planner_motor_feedback_snapshot_default(void)
   d.forward_speed = 0.0f;
   d.raw_gear = 1;
   d.raw_gear_valid = false;
+  d.controller_x = 100;
+  d.controller_y = 100;
+  d.controller_axes_valid = false;
   d.valid = false;
   d.fresh = false;
   d.age = INFINITY;

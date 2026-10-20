@@ -378,6 +378,13 @@ dwa_local_planner:
     near_obstacle_gear_radius: 1.00 # 进入近障碍物限档的圆半径，单位m
     near_obstacle_gear_release_radius: 1.10 # 释放近障碍物限档的圆半径，单位m
     near_obstacle_gear_level: 1
+    # 独立限速环：仅对完整倒车、纯左右横推及前进半区左右横推附近窄角触发。
+    # 正前进及红区外的前进转弯不触发；不改角速度、DWA决策、停止保护或脱困。
+    stationary_turn_ring_enabled: true
+    stationary_turn_ring_outer_radius_m: 1.00 # 外圆内线速度上限为1档速度，单位m
+    stationary_turn_ring_inner_radius_m: 0.91 # 内圆内线速度上限为1档速度的一半，单位m
+    stationary_turn_ring_forward_side_angle_deg: 10.0 # 从左右横推方向向前的红区角度
+    stationary_turn_ring_inner_speed_ratio: 0.50 # 内圆速度上限相对1档速度的比例
     # 动态制动为控制、规划和电机响应预留的时间与距离。
     moving_prebrake_reaction_sec: 0.30 # 预减速反应时间，单位s
     moving_prebrake_safety_margin: 0.05 # 预减速安全余量，单位m
@@ -418,6 +425,7 @@ dwa_local_planner:
     front_hard_stop_escape_linear_speed:  0.00 # DWA内部脱困只输出角速度，线速度固定为0
     front_hard_stop_escape_yawrate:  0.50 # DWA内部脱困角速度，单位rad/s
     stop_escape_trigger_sec: 0.00 # DWA内部连续硬停止触发时间，单位s
+    near_obstacle_yawrate_limit_enabled: false # 关闭近障碍物时的手动角速度0.70rad/s限幅；侧扫掠保护与硬停止仍生效
     # 普通DWA线速度使用非对称加减速斜坡；急停分支不经过该斜坡。
     dwa_velocity_ramp_enabled: true # 是否启用普通DWA输出速度斜坡
     # 霍尔实速超过1.20m/s时，当前或预测侧距进入30cm便平滑限到1.20m/s。

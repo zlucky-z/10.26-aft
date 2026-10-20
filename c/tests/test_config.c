@@ -143,6 +143,11 @@ int main(int argc, char **argv)
   expect_int("gear_peak_speeds_count", params.gear_peak_speeds_count, 5);
   expect_double("moving_prebrake_base_distance", params.moving_prebrake_base_distance, 0.90);
   expect_double("moving_dwa_speed_limit", params.moving_dwa_speed_limit, 0.6944);
+  expect_int("stationary_turn_ring_enabled", params.stationary_turn_ring_enabled, 1);
+  expect_double("stationary_turn_ring_outer_radius_m", params.stationary_turn_ring_outer_radius_m, 1.00);
+  expect_double("stationary_turn_ring_inner_radius_m", params.stationary_turn_ring_inner_radius_m, 0.91);
+  expect_double("stationary_turn_ring_forward_side_angle_deg", params.stationary_turn_ring_forward_side_angle_deg, 10.0);
+  expect_double("stationary_turn_ring_inner_speed_ratio", params.stationary_turn_ring_inner_speed_ratio, 0.50);
   /* 10.08 Fix V4：F1d 释放防抖 + 断崖斜坡（yaml 显式配置） */
   expect_int("bypass_near_zone_release_hold_cycles", params.bypass_near_zone_release_hold_cycles, 3);
   expect_int("bypass_near_zone_ramp_enabled", params.bypass_near_zone_ramp_enabled, 1);
@@ -198,7 +203,9 @@ int main(int argc, char **argv)
   expect_double("default front_corridor_width", defaults.front_corridor_width, 0.63);
   expect_double("default stop_escape_trigger_sec", defaults.stop_escape_trigger_sec, 1.0);
   expect_double("default front_hard_stop_escape_yawrate", defaults.front_hard_stop_escape_yawrate, 0.30);
+  expect_int("yaml near_obstacle_yawrate_limit_enabled", params.near_obstacle_yawrate_limit_enabled, 0);
   expect_double("default near_obstacle_max_yawrate", defaults.near_obstacle_max_yawrate, 0.70);
+  expect_int("default near_obstacle_yawrate_limit_enabled", defaults.near_obstacle_yawrate_limit_enabled, 1);
   expect_int("default local_foot_mask_enabled", defaults.local_foot_mask_enabled, 1);
 
   if (failures == 0) {

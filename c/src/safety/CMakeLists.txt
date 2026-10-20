@@ -3,6 +3,7 @@ add_library(dwa_safety STATIC
   escape_controller.c
   front_safety.c
   side_safety.c
+  stationary_turn_speed_limiter.c
 )
 target_include_directories(dwa_safety PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}

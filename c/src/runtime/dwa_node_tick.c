@@ -22,6 +22,8 @@
 
 #include "../hal/hal_log.h"
 #include "../hal/hal_time.h"
+#include "../common/dwa_geometry.h"
+#include "../safety/stationary_turn_speed_limiter.h"
 
 #define NODE_PI ((float)3.14159265358979323846)
 
@@ -168,6 +170,7 @@ void dwa_node_tick(dwa_node_t *node)
   float runtime_max_velocity;
   float moving_prebrake_y_down_rate;
   float planning_hold_target;
+  float stationary_turn_ring_nearest = (float)INFINITY;
   dwa_twist_t output;
   bool odom_fresh;
   dwa_velocity_t current;
@@ -205,6 +208,8 @@ void dwa_node_tick(dwa_node_t *node)
   node->diag_valid_count = 0;
   strncpy(node->diag_path, "early_exit", sizeof(node->diag_path) - 1);
   node->diag_path[sizeof(node->diag_path) - 1] = '\0';
+  node->stationary_turn_ring_speed_limit_mps = (float)INFINITY;
+  node->stationary_turn_ring_nearest_distance_m = (float)INFINITY;
   publish_footprint_stub(node);
 
   /* 把两个雷达输入合成到本周期需要的占用栅格里。 */
@@ -229,6 +234,29 @@ void dwa_node_tick(dwa_node_t *node)
     hal_mutex_unlock(&node->scan_mutex);
     fused_cloud_fresh =
       !dwa_node_stale(fused_cloud_time, p->scan_timeout_sec);
+    if (fused_cloud_fresh) {
+      size_t i;
+      for (i = 0; i < fused_cloud_count; ++i) {
+        const dwa_fused_base_point_t *sample = &fused_cloud_points[i];
+        const dwa_point_t *point = &sample->point;
+        if (!isfinite(point->x) || !isfinite(point->y)) continue;
+        if (!sample->front_safety_only &&
+            dwa_point_inside_footprint_self_filter(point->x, point->y,
+              &node->config.footprint, 0.0f)) {
+          continue;
+        }
+        if (!sample->front_safety_only &&
+            !sample->side_safety_only &&
+            p->rider_self_filter_enabled &&
+            point->x >= p->rider_self_filter_start_x &&
+            point->x <= p->rider_self_filter_front_x &&
+            fabsf(point->y) <= p->rider_self_filter_half_width) {
+          continue;
+        }
+        stationary_turn_ring_nearest = stsl_nearest_obstacle_distance(
+          point, 1, stationary_turn_ring_nearest);
+      }
+    }
     node->body_masked_points_this_tick = 0;
     node->side_flank_points_this_tick = 0; /* 9.28 Fix D */
     node->front_unclipped_clearance_this_tick = (float)INFINITY; /* V4d(10.08)：每周期重置，由 dnp_project_base_cloud_to_grid 在截断前统计 */
@@ -269,6 +297,32 @@ void dwa_node_tick(dwa_node_t *node)
   dynamic_input.forward_intent = intent.v > p->deadband_linear;
   motor_feedback = dwa_node_consume_motor_feedback(
     node, dynamic_input.forward_intent);
+  {
+    stsl_config_t ring_config;
+    stsl_result_t ring_result;
+    const float gear1_speed = p->gear_peak_speeds_count > 0 ?
+      p->gear_peak_speeds[0] : p->max_velocity;
+    ring_config.enabled = p->stationary_turn_ring_enabled;
+    ring_config.controller_center_x = 100;
+    ring_config.controller_center_y = 100;
+    ring_config.controller_x_dead_low = p->controller_x_dead_low;
+    ring_config.controller_x_dead_high = p->controller_x_dead_high;
+    ring_config.controller_y_dead_low = p->controller_y_dead_low;
+    ring_config.forward_side_angle_deg = p->stationary_turn_ring_forward_side_angle_deg;
+    ring_config.outer_radius_m = p->stationary_turn_ring_outer_radius_m;
+    ring_config.inner_radius_m = p->stationary_turn_ring_inner_radius_m;
+    ring_config.gear1_speed_mps = gear1_speed;
+    ring_config.inner_speed_ratio = p->stationary_turn_ring_inner_speed_ratio;
+    ring_result = stsl_evaluate(&ring_config,
+      motor_feedback.controller_x, motor_feedback.controller_y,
+      motor_feedback.controller_axes_valid,
+      fused_cloud_fresh, stationary_turn_ring_nearest);
+    if (ring_result.speed_limited) {
+      node->stationary_turn_ring_speed_limit_mps = ring_result.speed_limit_mps;
+      node->stationary_turn_ring_nearest_distance_m =
+        ring_result.nearest_obstacle_distance_m;
+    }
+  }
   dynamic_input.forward_start_rising = motor_feedback.forward_start_rising;
   dynamic_input.perception_fresh = fused_cloud_fresh;
   dynamic_input.hall_speed_fresh = motor_feedback.fresh;

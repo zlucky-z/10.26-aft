@@ -328,6 +328,8 @@ int dwa_node_init(dwa_node_t *node, const dwa_planner_params_t *params)
   node->hard_stop_escape_direction_latched_sec = (double)NAN;
   node->near_obstacle_gear_latched = false;
   node->near_obstacle_gear_nearest_distance = (float)INFINITY;
+  node->stationary_turn_ring_speed_limit_mps = (float)INFINITY;
+  node->stationary_turn_ring_nearest_distance_m = (float)INFINITY;
   node->moving_prebrake_y_down_rate = params->moving_prebrake_y_rate_release;
   node->output_effective_gear = 1;
   node->output_gear_closed_loop_active = false;
@@ -356,6 +358,7 @@ int dwa_node_init(dwa_node_t *node, const dwa_planner_params_t *params)
   node->controller_x_valid = false;
   node->last_controller_y = 100;
   node->controller_y_valid = false;
+  node->last_controller_axes_time = 0.0;
   node->raw_gear = 1;
   node->raw_gear_valid = false;
 
@@ -505,6 +508,7 @@ void dwa_node_on_motor_feedback(
   node->controller_x_valid = true;
   node->last_controller_y = controller_y;
   node->controller_y_valid = true;
+  node->last_controller_axes_time = dwa_node_now_sec();
 
   node->raw_gear_valid = false;
   if (data_count >= 7 && isfinite(data[6])) {
@@ -594,6 +598,13 @@ static planner_motor_feedback_snapshot_t motor_feedback_snapshot_locked(
   snapshot.right_mps = node->last_wheel_right_mps;
   snapshot.forward_speed = node->filtered_actual_forward_speed;
   snapshot.raw_gear = node->raw_gear;
+  snapshot.controller_x = node->last_controller_x;
+  snapshot.controller_y = node->last_controller_y;
+  snapshot.controller_axes_valid =
+    node->controller_x_valid && node->controller_y_valid &&
+    node->last_controller_axes_time > 0.0 &&
+    dwa_node_now_sec() - node->last_controller_axes_time <=
+      (double)node->params_snapshot.cmd_timeout_sec;
   snapshot.valid = node->wheel_feedback_valid;
   if (snapshot.valid) {
     const double age = dwa_node_now_sec() - node->last_wheel_feedback_time;

@@ -219,6 +219,11 @@ void dwa_planner_params_defaults(dwa_planner_params_t *p)
   p->near_obstacle_gear_radius = 1.0f;
   p->near_obstacle_gear_release_radius = 1.10f;
   p->near_obstacle_gear_level = 1;
+  p->stationary_turn_ring_enabled = true;
+  p->stationary_turn_ring_outer_radius_m = 1.00f;
+  p->stationary_turn_ring_inner_radius_m = 0.91f;
+  p->stationary_turn_ring_forward_side_angle_deg = 10.0f;
+  p->stationary_turn_ring_inner_speed_ratio = 0.50f;
 
   p->moving_prebrake_reaction_sec = 0.30f;
   p->moving_prebrake_safety_margin = 0.05f;
@@ -252,7 +257,8 @@ void dwa_planner_params_defaults(dwa_planner_params_t *p)
   p->front_hard_stop_escape_linear_speed = 0.04f;
   p->front_hard_stop_escape_yawrate = 0.30f;
   p->stop_escape_trigger_sec = 1.0f;
-  p->near_obstacle_max_yawrate = 0.70f; /* node_members 默认，不在 yaml */
+  p->near_obstacle_yawrate_limit_enabled = true;
+  p->near_obstacle_max_yawrate = 0.70f;
 
   p->dwa_velocity_ramp_enabled = true;
 
@@ -579,6 +585,11 @@ int dwa_planner_params_load(const char *yaml_path, dwa_planner_params_t *p)
   p->near_obstacle_gear_radius = dwa_yaml_get_double(d, "near_obstacle_gear_radius", p->near_obstacle_gear_radius);
   p->near_obstacle_gear_release_radius = dwa_yaml_get_double(d, "near_obstacle_gear_release_radius", p->near_obstacle_gear_release_radius);
   p->near_obstacle_gear_level = dwa_yaml_get_int(d, "near_obstacle_gear_level", p->near_obstacle_gear_level);
+  p->stationary_turn_ring_enabled = dwa_yaml_get_bool(d, "stationary_turn_ring_enabled", p->stationary_turn_ring_enabled);
+  p->stationary_turn_ring_outer_radius_m = dwa_max0(dwa_yaml_get_double(d, "stationary_turn_ring_outer_radius_m", p->stationary_turn_ring_outer_radius_m));
+  p->stationary_turn_ring_inner_radius_m = dwa_max0(dwa_yaml_get_double(d, "stationary_turn_ring_inner_radius_m", p->stationary_turn_ring_inner_radius_m));
+  p->stationary_turn_ring_forward_side_angle_deg = dwa_clamp_value(dwa_yaml_get_double(d, "stationary_turn_ring_forward_side_angle_deg", p->stationary_turn_ring_forward_side_angle_deg), 0.0f, 45.0f);
+  p->stationary_turn_ring_inner_speed_ratio = dwa_clamp_value(dwa_yaml_get_double(d, "stationary_turn_ring_inner_speed_ratio", p->stationary_turn_ring_inner_speed_ratio), 0.0f, 1.0f);
   p->moving_dwa_trigger_distance = dwa_yaml_get_double(d, "moving_dwa_trigger_distance", p->moving_dwa_trigger_distance);
   p->moving_dwa_entry_speed_max = dwa_yaml_get_double(d, "moving_dwa_entry_speed_max", p->moving_dwa_entry_speed_max);
   p->moving_release_hysteresis = dwa_max0(dwa_yaml_get_double(d, "moving_release_hysteresis", p->moving_release_hysteresis));
@@ -615,6 +626,7 @@ int dwa_planner_params_load(const char *yaml_path, dwa_planner_params_t *p)
   p->front_hard_stop_escape_linear_speed = dwa_yaml_get_double(d, "front_hard_stop_escape_linear_speed", p->front_hard_stop_escape_linear_speed);
   p->front_hard_stop_escape_yawrate = dwa_yaml_get_double(d, "front_hard_stop_escape_yawrate", p->front_hard_stop_escape_yawrate);
   p->stop_escape_trigger_sec = dwa_yaml_get_double(d, "stop_escape_trigger_sec", p->stop_escape_trigger_sec);
+  p->near_obstacle_yawrate_limit_enabled = dwa_yaml_get_bool(d, "near_obstacle_yawrate_limit_enabled", p->near_obstacle_yawrate_limit_enabled);
 
   p->dwa_velocity_ramp_enabled = dwa_yaml_get_bool(d, "dwa_velocity_ramp_enabled", p->dwa_velocity_ramp_enabled);
 
@@ -822,4 +834,10 @@ void dwa_planner_params_dump(const dwa_planner_params_t *p)
   printf("gear_peak_speeds=[%d]", p->gear_peak_speeds_count);
   for (int i = 0; i < p->gear_peak_speeds_count; ++i) printf(" %.17g", p->gear_peak_speeds[i]);
   printf("\n");
+  printf("stationary_turn_ring enabled=%d outer=%.17g inner=%.17g angle=%.17g inner_ratio=%.17g\n",
+    p->stationary_turn_ring_enabled ? 1 : 0,
+    p->stationary_turn_ring_outer_radius_m,
+    p->stationary_turn_ring_inner_radius_m,
+    p->stationary_turn_ring_forward_side_angle_deg,
+    p->stationary_turn_ring_inner_speed_ratio);
 }

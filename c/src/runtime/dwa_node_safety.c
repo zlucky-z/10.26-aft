@@ -23,6 +23,7 @@
 #include "../safety/escape_controller.h"
 #include "../safety/front_safety.h"
 #include "../safety/side_safety.h"
+#include "../safety/stationary_turn_speed_limiter.h"
 
 #define NODE_PI ((float)3.14159265358979323846)
 
@@ -51,6 +52,7 @@ static const char *const kKeyTurnSideCap = "dns:turn_side_cap";
 static const char *const kKeyTurnSafetyAware = "dns:turn_safety_aware";
 static const char *const kKeyGearTransition = "dns:gear_transition";
 static const char *const kKeyGearLog = "dns:gear_log";
+static const char *const kKeyStationaryTurnRing = "dns:stationary_turn_ring";
 static const char *const kKeyScoreLog = "dns:score_log";
 
 
@@ -464,11 +466,25 @@ bool dns_publish_regular_command(
   dwa_dynamic_control_mode_t mode,
   bool hard_stop)
 {
-  /* 独立减速模块仅在其自身的速度控制阶段生效；不改写 DWA 的输出或档位。 */
-  node->last_published_cmd = *output;
+  dwa_twist_t published = *output;
+  const float previous_linear = published.linear_x;
+  published.linear_x = stsl_apply_linear_limit(
+    published.linear_x, node->stationary_turn_ring_speed_limit_mps);
+  if (isfinite(node->stationary_turn_ring_speed_limit_mps)) {
+    if (fabsf(previous_linear) > fabsf(published.linear_x)) {
+      hal_log_throttle(hal_steady_now_sec(), 500, kKeyStationaryTurnRing,
+        HAL_LOG_INFO,
+        "stationary-turn speed ring active nearest=%.3fm cap=%.3fm/s "
+        "linear=%.3f->%.3f yaw=%.3f",
+        node->stationary_turn_ring_nearest_distance_m,
+        node->stationary_turn_ring_speed_limit_mps,
+        previous_linear, published.linear_x, published.angular_z);
+    }
+  }
+  node->last_published_cmd = published;
   node->last_published_tick = node->tick_count;
   publish_hall_speed_control(
-    node, hall_speed_control_active, output->linear_x, mode, hard_stop);
+    node, hall_speed_control_active, published.linear_x, mode, hard_stop);
   return true;
 }
 
@@ -544,7 +560,8 @@ static void reset_hard_stop_escape_state(dwa_node_t *node)
 static float limit_near_obstacle_yawrate(
   const dwa_node_t *node, float yawrate, bool nearby_obstacle)
 {
-  if (!nearby_obstacle || !isfinite(yawrate)) {
+  if (!node->params_snapshot.near_obstacle_yawrate_limit_enabled ||
+      !nearby_obstacle || !isfinite(yawrate)) {
     return yawrate;
   }
   {

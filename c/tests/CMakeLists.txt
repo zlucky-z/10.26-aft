@@ -49,3 +49,8 @@ add_test(NAME unified_escape COMMAND test_unified_escape)
 add_executable(test_side_clearance_sector test_side_clearance_sector.c)
 target_link_libraries(test_side_clearance_sector dwa_runtime)
 add_test(NAME side_clearance_sector COMMAND test_side_clearance_sector)
+
+add_executable(test_stationary_turn_speed_limiter test_stationary_turn_speed_limiter.c)
+target_link_libraries(test_stationary_turn_speed_limiter dwa_safety m)
+add_test(NAME stationary_turn_speed_limiter COMMAND test_stationary_turn_speed_limiter)
+
