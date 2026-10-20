@@ -35,7 +35,7 @@ dwa_local_planner:
     # 主体矩形到脚踏板后缘；脚踏板和脚尖安全区使用下方独立窄包络。
     footprint_front: 0.50 # 主体车体包络的最前方x坐标，单位m
     footprint_back: 0.14 # 主体车体包络的最后方x坐标，单位m
-    footprint_half_width: 0.27 # 主体车体包络的半宽，单位m
+    footprint_half_width: 0.315 # 主体车体包络的半宽，单位m（车体总宽0.63m）
     footrest_start_x: 0.57 # 脚踏板包络开始的x坐标，单位m
     footrest_front_x: 0.75 # 脚踏板包络最前方x坐标，单位m
     footrest_half_width: 0.23 # 脚踏板包络的半宽，单位m
@@ -457,10 +457,10 @@ dwa_local_planner:
     speed_restore_stable_sec: 1.0 # 全部安全条件连续满足此时间后才恢复高速，单位s
     speed_restore_max_yawrate: 0.12 # 恢复高速要求车体/行驶方向稳定，允许角速度，单位rad/s
     # 保留给RViz距离线的基础显示宽度，按实测车体宽度设置。
-    front_corridor_width: 0.54 # 前方通道参考显示宽度，单位m
+    front_corridor_width: 0.63 # 前方通道参考显示宽度，单位m
     # 前方 DWA 触发区从左右雷达中心线开始，几何选簇使用同一套外扩梯形。
     front_trigger_start_x: 0.50 # 前方DWA触发区域起始x坐标，单位m
-    front_trigger_base_width: 0.54 # 前方DWA触发区域基础宽度，单位m
+    front_trigger_base_width: 0.63 # 前方DWA触发区域基础宽度，单位m
     front_trigger_expand_angle_deg: 5.0 # 前方触发区域随距离扩展的角度，单位deg
     # 控制器X/Y中心为100，89～111范围内视为死区。
     controller_x_dead_low: 89 # 控制器X轴死区下限

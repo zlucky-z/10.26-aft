@@ -35,7 +35,7 @@ void dwa_planner_params_defaults(dwa_planner_params_t *p)
   p->right_laser_angle_offset_deg = 0.0f;
 
   /* 车体包络：DwaFootprint 成员默认 + constructor 无覆盖 */
-  p->footprint_front = 0.34f; p->footprint_back = 0.32f; p->footprint_half_width = 0.28f;
+  p->footprint_front = 0.34f; p->footprint_back = 0.32f; p->footprint_half_width = 0.315f;
   p->footrest_start_x = 0.0f; p->footrest_front_x = 0.0f; p->footrest_half_width = 0.0f;
   p->toe_safety_front_x = 0.0f; p->toe_safety_half_width = 0.0f;
   p->footprint_padding = 0.0f;
@@ -291,9 +291,9 @@ void dwa_planner_params_defaults(dwa_planner_params_t *p)
   p->speed_restore_max_yawrate = 0.12f;
 
   /* 前方触发区：constructor 的计算型默认（依赖雷达安装与半宽）。 */
-  p->front_corridor_width = 2.0f * p->footprint_half_width;             /* 0.56 */
+  p->front_corridor_width = 2.0f * p->footprint_half_width;             /* 0.63 */
   p->front_trigger_start_x = 0.5f * (p->left_laser_x + p->right_laser_x); /* 0.48 */
-  p->front_trigger_base_width = 2.0f * p->footprint_half_width;         /* 0.56 */
+  p->front_trigger_base_width = 2.0f * p->footprint_half_width;         /* 0.63 */
   p->front_trigger_expand_angle_deg = 5.0f;
 
   p->controller_x_dead_low = 89;  p->controller_x_dead_high = 111;

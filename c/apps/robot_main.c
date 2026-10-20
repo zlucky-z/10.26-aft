@@ -85,9 +85,9 @@
 #define RM_FUSED_MAX 65536   /* 融合点上限（双侧 × 截断值） */
 
 /* 前方探测区（基线 predictive_FNC.c 同款几何，单位换算为本工程米制）：
- * 车头 x=0.50m、半宽 0.27m、两角向外张 5° 的梯形。 */
+ * 车头 x=0.50m、半宽 0.315m、两角向外张 5° 的梯形。 */
 #define RM_CAR_FRONT_M 0.50
-#define RM_CAR_HALF_WID_M 0.27
+#define RM_CAR_HALF_WID_M 0.315
 #define RM_FRONT_DETECT_ANGLE_DEG 5.0
 /* 轮距（生产 WHEEL_TRACK_M=0.50，仅用于打印 wfb 轮差估计）。 */
 #define RM_WHEEL_TRACK_M 0.50
