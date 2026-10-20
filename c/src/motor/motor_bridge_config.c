@@ -68,7 +68,8 @@ void mb_config_defaults(mb_config_t *c)
   c->escape_forward_deadband = 0.02;
   c->escape_turn_yawrate = 0.5;
   c->escape_cloud_timeout = 0.60;
-  c->escape_half_width = 0.27;
+  c->escape_half_width = 0.315;
+  c->escape_max_duration_sec = 2.0;
   c->radar_timeout = 0.5;
   copy_str(c->horn_topic, sizeof(c->horn_topic), "/wheelchair/horn_cmd");
   c->horn_timeout = 0.5;
@@ -207,6 +208,7 @@ int mb_config_parse(int argc, char **argv, mb_config_t *c,
     else if (strcmp(key, "--escape-turn-yawrate") == 0) parse_double_value(value, &c->escape_turn_yawrate);
     else if (strcmp(key, "--escape-cloud-timeout") == 0) parse_double_value(value, &c->escape_cloud_timeout);
     else if (strcmp(key, "--escape-half-width") == 0) parse_double_value(value, &c->escape_half_width);
+    else if (strcmp(key, "--escape-max-duration-sec") == 0) parse_double_value(value, &c->escape_max_duration_sec);
     else if (strcmp(key, "--radar-timeout") == 0) parse_double_value(value, &c->radar_timeout);
     else if (strcmp(key, "--horn-topic") == 0) copy_str(c->horn_topic, sizeof(c->horn_topic), value);
     else if (strcmp(key, "--horn-timeout") == 0) parse_double_value(value, &c->horn_timeout);
@@ -308,6 +310,7 @@ int mb_config_parse(int argc, char **argv, mb_config_t *c,
   if (c->escape_turn_yawrate < 0.0) { snprintf(err, err_size, "--escape-turn-yawrate must be >= 0"); return -1; }
   if (c->escape_cloud_timeout <= 0.0) { snprintf(err, err_size, "--escape-cloud-timeout must be positive"); return -1; }
   if (c->escape_half_width < 0.0) { snprintf(err, err_size, "--escape-half-width must be >= 0"); return -1; }
+  if (c->escape_max_duration_sec <= 0.0) { snprintf(err, err_size, "--escape-max-duration-sec must be positive"); return -1; }
   if (c->horn_timeout <= 0) { snprintf(err, err_size, "--horn-timeout must be positive"); return -1; }
   if (!mp_valid_gear(c->fallback_gear)) { snprintf(err, err_size, "--fallback-gear must be in 1..5"); return -1; }
   /* 先查条数（避免越界），再查数值（对齐 C++ 校验消息顺序：正性检查在前、

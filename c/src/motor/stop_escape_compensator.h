@@ -30,7 +30,8 @@ typedef struct {
   double right_clearance;
   const char *reason; /* conditions_not_met / waiting_stop_hold /
                          no_safe_side / escaping / paused_cloud_stale /
-                         paused_no_safe_side / recovered */
+                         selected_side_blocked / manual_turn_takeover /
+                         escape_locked_out / duration_limit / recovered */
 } se_stop_escape_decision_t;
 
 typedef struct {
@@ -45,6 +46,7 @@ typedef struct {
   double yawrate;
   double cloud_timeout;
   double half_width;
+  double max_duration_sec;
   double tie_margin;
   double forward_min_x;
   double forward_max_x;
@@ -55,11 +57,13 @@ typedef struct {
   double right_clearance;
   se_direction_t front_obstacle_away_direction;
   double stop_since;
+  double started_at;
   double recovery_since;
   double forward_command_since;
   double handoff_since;
   double forward_motion_since;
   int handoff_active;
+  int inhibited_until_rearm;
   se_direction_t direction;
   se_direction_t last_direction;
   int active;
@@ -92,6 +96,17 @@ se_stop_escape_decision_t se_stop_escape_compensator_update(
   int normal_output_stopped,
   int positive_dwa_command,
   int positive_forward_motion);
+
+se_stop_escape_decision_t se_stop_escape_compensator_update_with_turn(
+  se_stop_escape_compensator_t *c,
+  double now,
+  int controller_neutral,
+  int forward_intent,
+  int vehicle_stopped,
+  int normal_output_stopped,
+  int positive_dwa_command,
+  int positive_forward_motion,
+  se_direction_t manual_turn_direction);
 
 double se_stop_escape_compensator_left_clearance(
   const se_stop_escape_compensator_t *c);

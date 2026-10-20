@@ -922,6 +922,8 @@ static int rm_build_bridge_argv(const char *motor_port, int dry_run,
     "--wheel-track-m", "0.50",
     "--wheel-yaw-max-dt", "0.15",
     "--escape-stop-hold-sec", "0.0",
+    "--escape-half-width", "0.315",
+    "--escape-max-duration-sec", "2.0",
     "--no-controller-require-neutral",
     /* 9.27 去掉干预路径角速度 slew：默认 0.9 rad/s²（每 0.1s 周期 w 最多
      * 变 0.09，0→1.4 需 1.55s），且只在 DWA 避障干预写帧时生效——实测

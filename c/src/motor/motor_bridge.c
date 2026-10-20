@@ -245,6 +245,7 @@ int mb_bridge_init(mb_bridge_t *b, const mb_config_t *config_in,
     config->escape_stop_hold_sec, config->escape_stop_speed,
     config->escape_turn_yawrate, config->escape_cloud_timeout,
     config->escape_half_width);
+  b->stop_escape.max_duration_sec = config->escape_max_duration_sec;
   mc_hall_speed_controller_init(&b->hall_speed_controller,
     config->hall_speed_y_gain, config->hall_speed_y_down_rate,
     config->hall_speed_y_up_rate, config->hall_speed_deadband,
@@ -1737,6 +1738,11 @@ se_stop_escape_decision_t mb_update_stop_escape(mb_bridge_t *b, double now,
   int controller_neutral_stop, int normal_output_stopped)
 {
   const int physical_forward = mb_physical_forward_intent(b, now);
+  const double controller_turn = mb_controller_turn_ratio(b,
+    b->last_controller_x);
+  const se_direction_t manual_turn_direction = controller_turn > 0.0
+    ? SE_DIRECTION_LEFT : (controller_turn < 0.0
+      ? SE_DIRECTION_RIGHT : SE_DIRECTION_NONE);
   const int dwa_request_fresh = b->dwa_escape_request &&
     b->dwa_escape_request_time > 0.0 &&
     now >= b->dwa_escape_request_time &&
@@ -1755,10 +1761,10 @@ se_stop_escape_decision_t mb_update_stop_escape(mb_bridge_t *b, double now,
    * trigger is for event attribution, not the ongoing escape-enable signal.
    * Initial activation still requires stopped wheels and stopped normal output
    * inside the compensator, so this cannot take over ordinary movement. */
-  b->stop_escape_last_decision = se_stop_escape_compensator_update(
+  b->stop_escape_last_decision = se_stop_escape_compensator_update_with_turn(
     &b->stop_escape, now, controller_neutral_stop, physical_forward,
     vehicle_stopped, normal_output_stopped, positive_dwa_command,
-    positive_forward_motion);
+    positive_forward_motion, manual_turn_direction);
   if (b->stop_escape_last_decision.active &&
       !b->stop_escape_event_active) {
     ++b->stop_escape_event_count;
