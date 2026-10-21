@@ -379,10 +379,10 @@ dwa_local_planner:
     near_obstacle_gear_release_radius: 1.10 # 释放近障碍物限档的圆半径，单位m
     near_obstacle_gear_level: 1
     # 独立限速环：仅对完整倒车、纯左右横推及前进半区左右横推附近窄角触发。
-    # 正前进及红区外的前进转弯不触发；不改角速度、DWA决策、停止保护或脱困。
+    # 正前进及红区外的前进转弯不触发；圆内通过控制器档位协议切到1档。
     stationary_turn_ring_enabled: true
-    stationary_turn_ring_outer_radius_m: 1.00 # 外圆内线速度上限为1档速度，单位m
-    stationary_turn_ring_inner_radius_m: 0.91 # 内圆内线速度上限为1档速度的一半，单位m
+    stationary_turn_ring_outer_radius_m: 1.00 # 外圆内强制控制器1档，并将线速度限制在1档范围，单位m
+    stationary_turn_ring_inner_radius_m: 0.91 # 内圆内线速度再限制为1档速度的一半，单位m
     stationary_turn_ring_forward_side_angle_deg: 10.0 # 从左右横推方向向前的红区角度
     stationary_turn_ring_inner_speed_ratio: 0.50 # 内圆速度上限相对1档速度的比例
     # 动态制动为控制、规划和电机响应预留的时间与距离。
@@ -407,9 +407,9 @@ dwa_local_planner:
     # Side hard stop uses only fused real radar points, not DWA scoring.
     side_hard_stop_circle_enabled: true # 是否启用侧边硬停止圆形保护
     # 圆心前移以覆盖车体前半部、脚踏板和脚尖安全区，保留车尾后部的非保护区域。
-    side_hard_stop_circle_center_x: 0.51 # 侧边硬停止保护圆心x坐标，单位m
+    side_hard_stop_circle_center_x: 0.30 # 侧边硬停止保护圆心x坐标，单位m
     side_hard_stop_circle_center_y: 0.0 # 侧边硬停止保护圆心y坐标，单位m
-    side_hard_stop_circle_radius: 0.40 # 侧边硬停止保护圆半径，单位m
+    side_hard_stop_circle_radius: 0.50 # 侧边硬停止保护圆半径，单位m
     side_hard_stop_reverse_escape_yawrate: 0.08 # 倒车侧边硬停时叠加的反向脱困角速度，单位rad/s
     # 侧边扫掠使用左右轮霍尔角速度，并将远期风险转换为角速度限幅。
     side_hard_stop_wheel_track_m: 0.50 # 左右驱动轮轮距，单位m

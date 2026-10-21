@@ -444,7 +444,10 @@ static void publish_hall_speed_control(
 {
   dwa_hall_speed_control_msg_t message;
   message.data[0] = active ? 1.0f : 0.0f;
-  message.data[1] = target_linear;
+  /* Hall target is a speed magnitude.  Reverse direction remains in the
+   * signed command/frame; publishing a negative target would make the motor
+   * bridge discard the whole metadata update before applying effective_gear. */
+  message.data[1] = fabsf(target_linear);
   message.data[2] = (float)(int)mode;
   message.data[3] = node->dynamic_config.moving_prebrake_target_speed;
   message.data[4] = node->moving_prebrake_y_down_rate;

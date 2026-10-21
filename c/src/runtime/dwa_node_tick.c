@@ -695,6 +695,17 @@ void dwa_node_tick(dwa_node_t *node)
         raw_decision.gear_closed_loop_active = true;
       }
     }
+    /* The stationary-turn ring is a gear-state limiter, not only a linear
+     * speed cap. Force the native controller gear so both translation and
+     * steering use first-gear behavior in the ring. */
+    if (isfinite(node->stationary_turn_ring_speed_limit_mps)) {
+      raw_decision.effective_gear = 1;
+      raw_decision.gear_closed_loop_active = true;
+      hal_log_throttle(hal_steady_now_sec(), 500, kKeyNearGear,
+        HAL_LOG_INFO,
+        "stationary-turn ring forces controller gear=1 nearest=%.3fm",
+        node->stationary_turn_ring_nearest_distance_m);
+    }
     raw_decision.gear = raw_decision.effective_gear;
   }
   node->diag_mode = (int)raw_decision.mode;

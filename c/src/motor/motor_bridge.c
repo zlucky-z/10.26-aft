@@ -377,6 +377,27 @@ void mb_on_cmd(mb_bridge_t *b, double linear_x, double angular_z)
   b->last_angular = angular_z;
 }
 
+static void mb_update_output_gear_from_hall_message(mb_bridge_t *b,
+  int effective_gear, int gear_closed_loop_active, double now)
+{
+  if (effective_gear >= 1) {
+    const int gear_changed = (!b->output_gear_valid ||
+                              b->output_gear != effective_gear ||
+                              b->output_gear_closed_loop_active !=
+                                gear_closed_loop_active);
+    b->output_gear = effective_gear;
+    b->output_gear_valid = 1;
+    b->output_gear_closed_loop_active = gear_closed_loop_active;
+    b->last_output_gear_update_time = now;
+    if (gear_changed) {
+      hal_log(HAL_LOG_INFO,
+        "motor output gear: raw=%d effective=%d source=%s",
+        b->controller_gear, b->output_gear,
+        gear_closed_loop_active ? "closed_loop" : "follow_controller");
+    }
+  }
+}
+
 void mb_on_hall_speed_control(mb_bridge_t *b, const float *data,
   size_t data_size)
 {
@@ -407,9 +428,30 @@ void mb_on_hall_speed_control(mb_bridge_t *b, const float *data,
   gear_closed_loop_active =
     (data_size >= 7 && data[6] >= 0.5f);
   hard_stop = (data_size >= 8 && data[7] >= 0.5f);
-  if (!isfinite(target) || target < 0.0) {
+  now = mb_now(b);
+  /* The gear field is output metadata, not a Hall target.  In particular,
+   * reverse manual-bypass publishes a negative signed command while Hall
+   * control is inactive.  Apply the effective gear before validating the
+   * (unsigned) Hall speed target so a negative reverse target cannot discard
+   * the ring-forced gear=1 state. */
+  if (!hard_stop) {
+    mb_update_output_gear_from_hall_message(
+      b, effective_gear, gear_closed_loop_active, now);
+  }
+  if (!isfinite(target)) {
     hal_log(HAL_LOG_WARN, "ignore invalid hall speed target");
     return;
+  }
+  if (target < 0.0) {
+    if (!active) {
+      /* Hall target is a magnitude; reverse direction is carried by the
+       * signed cmd/frame.  Keep the gear metadata above, then normalize the
+       * inactive reverse target so it is not rejected as malformed. */
+      target = -target;
+    } else {
+      hal_log(HAL_LOG_WARN, "ignore negative active hall speed target");
+      return;
+    }
   }
   if (!isfinite(brake_target) || brake_target <= 0.0) {
     hal_log(HAL_LOG_WARN, "ignore invalid Hall prebrake target");
@@ -419,7 +461,6 @@ void mb_on_hall_speed_control(mb_bridge_t *b, const float *data,
     hal_log(HAL_LOG_WARN, "ignore invalid Hall dynamic down rate");
     return;
   }
-  now = mb_now(b);
   if (hard_stop) {
     b->hard_stop_active = 0;
     b->last_hard_stop_time = now;
@@ -492,20 +533,6 @@ void mb_on_hall_speed_control(mb_bridge_t *b, const float *data,
     b->hall_speed_dynamic_down_rate = mp_clamp_double(dynamic_down_rate, lo, hi_max);
   }
   b->hall_speed_control_mode = mode;
-  if (effective_gear >= 1) {
-    const int gear_changed = (!b->output_gear_valid ||
-                              b->output_gear != effective_gear ||
-                              b->output_gear_closed_loop_active != gear_closed_loop_active);
-    b->output_gear = effective_gear;
-    b->output_gear_valid = 1;
-    b->output_gear_closed_loop_active = gear_closed_loop_active;
-    b->last_output_gear_update_time = now;
-    if (gear_changed) {
-      hal_log(HAL_LOG_INFO, "motor output gear: raw=%d effective=%d source=%s",
-        b->controller_gear, b->output_gear,
-        gear_closed_loop_active ? "front_force_1" : "follow_controller");
-    }
-  }
   b->last_hall_speed_control_time = now;
 }
 
@@ -690,10 +717,11 @@ double mb_forward_reference_now(mb_bridge_t *b)
   return b->forward_speed_reference;
 }
 
-/* A2(10.09)：Y 油门映射基准——按当前档位峰值缩放，专供
- * mb_motion_to_xy 前进分支。与 mb_forward_reference_now 的
- * min(峰值,0.70) 语义刻意分离：后者继续服务手柄反向映射与
- * ordinary-forward 钳位（intent 链零改动）。
+/* A2(10.09)：Y 油门映射基准——按当前档位峰值缩放。前进与倒车
+ * 都使用当前最终输出档位；倒车不能再固定使用 0.70，否则限速圆
+ * 强制 gear=1 只停留在规划日志里，倒车旁路仍按旧档位映射。
+ * 与 mb_forward_reference_now 的 min(峰值,0.70) 语义刻意分离：
+ * 后者继续服务控制器原始意图计算与 ordinary-forward 钳位。
  *
  * 根因（014339/022757 日志定案）：固定基准 0.70 下任何指令
  * ≥0.56m/s 都映射 Y=200 满油门，车固件对 Y=200 的响应是当前
@@ -733,12 +761,9 @@ mp_frame_t mb_build_output_frame(mb_bridge_t *b, int x, int y)
 void mb_motion_to_xy(mb_bridge_t *b, double linear, double angular,
   int *out_x, int *out_y)
 {
-  /* A2(10.09)：前进分支改用档位峰值基准（详见
-   * mb_y_scale_reference_now 注释）；倒退分支保留固定基准——
-   * 手柄反向映射用 max_reverse_speed(0.70) 生成 raw_linear，
-   * 两边基准保持一致才不削弱倒车油门。 */
-  const double forward_reference =
-    b->forward_speed_reference > 1e-6 ? b->forward_speed_reference : 1e-6;
+  /* 前进与倒车统一使用当前最终输出档位的速度基准。
+   * 倒车旁路也必须经过同一基准，否则 ring 强制 gear=1 时，
+   * 规划层虽已改档，实际 Y 映射仍会按旧固定基准输出。 */
   const double y_ref_now = mb_y_scale_reference_now(b);
   const double y_scale_reference = y_ref_now > 1e-6 ? y_ref_now : 1e-6;
   double y;
@@ -753,7 +778,7 @@ void mb_motion_to_xy(mb_bridge_t *b, double linear, double angular,
     y = (y > deadzone_y + 1.0) ? y : deadzone_y + 1.0;
   } else {
     y = (linear < 0.0)
-      ? (double)MP_CENTER + 100.0 * linear / forward_reference
+      ? (double)MP_CENTER + 100.0 * linear / y_scale_reference
       : (double)MP_CENTER;
   }
 
@@ -2079,8 +2104,10 @@ int mb_raw_reverse_passthrough_xy(mb_bridge_t *b, double now,
 {
   int controller_x, controller_y;
   int limited_controller_y;
+  int mapped_x, mapped_y;
   int angular_intervened;
   double linear_scale;
+  double reverse_reference;
 
   if (!mb_raw_command_is_recent(b, now)) return 0;
   if (b->last_cmd_time <= 0.0 ||
@@ -2090,20 +2117,25 @@ int mb_raw_reverse_passthrough_xy(mb_bridge_t *b, double now,
 
   controller_x = mp_clamp_coord((double)b->last_controller_x);
   controller_y = mp_clamp_coord((double)b->last_controller_y);
-  /* Keep the controller's reverse-turn X input, but apply any DWA linear
-   * speed cap to the reverse throttle axis before forwarding the frame. */
+  /* Keep the controller's reverse-turn X input, but map the reverse throttle
+   * from the signed command through the current effective gear reference.
+   * The old path scaled the raw Y around center using only last_raw_linear /
+   * last_linear and therefore kept the fixed 0.70 m/s reverse reference even
+   * after the stationary-turn ring forced gear=1. */
   linear_scale = fabs(b->last_linear) / fabs(b->last_raw_linear);
   if (linear_scale > 1.0) linear_scale = 1.0;
   if (linear_scale < 0.0) linear_scale = 0.0;
-  limited_controller_y = mp_clamp_coord((double)lround(
-    (double)b->config.controller_center_y +
-    ((double)controller_y - (double)b->config.controller_center_y) *
-      linear_scale));
-  if (linear_scale < 0.999) {
+  reverse_reference = mb_y_scale_reference_now(b);
+  mb_motion_to_xy(b, b->last_linear, 0.0, &mapped_x, &mapped_y);
+  (void)mapped_x;
+  limited_controller_y = mapped_y;
+  if (linear_scale < 0.999 ||
+      b->output_gear_closed_loop_active) {
     static int reverse_cap_log_key;
     hal_log_throttle(now, 500, &reverse_cap_log_key, HAL_LOG_INFO,
-      "reverse_linear_cap raw=%.3f cmd=%.3f scale=%.3f y=%d->%d",
+      "reverse_gear_map raw=%.3f cmd=%.3f scale=%.3f gear=%d ref=%.3f y=%d->%d",
       b->last_raw_linear, b->last_linear, linear_scale,
+      mb_current_output_gear(b), reverse_reference,
       controller_y, limited_controller_y);
   }
   angular_intervened =
@@ -2111,9 +2143,11 @@ int mb_raw_reverse_passthrough_xy(mb_bridge_t *b, double now,
   if (!angular_intervened) {
     *out_x = controller_x;
     *out_y = limited_controller_y;
-    state_set(out_state, linear_scale < 0.999
-      ? "controller_reverse_passthrough_limited"
-      : "controller_reverse_passthrough");
+    state_set(out_state,
+      b->output_gear_closed_loop_active ? "controller_reverse_gear_limited" :
+      (linear_scale < 0.999
+        ? "controller_reverse_passthrough_limited"
+        : "controller_reverse_passthrough"));
     return 1;
   }
   {
@@ -2126,9 +2160,11 @@ int mb_raw_reverse_passthrough_xy(mb_bridge_t *b, double now,
     mb_motion_to_xy(b, 0.0, corrected_angular, &cx, &cy);
     *out_x = cx;
     *out_y = limited_controller_y;
-    state_set(out_state, linear_scale < 0.999
-      ? "controller_reverse_safety_steer_limited"
-      : "controller_reverse_safety_steer");
+    state_set(out_state,
+      b->output_gear_closed_loop_active ? "controller_reverse_gear_steer_limited" :
+      (linear_scale < 0.999
+        ? "controller_reverse_safety_steer_limited"
+        : "controller_reverse_safety_steer"));
     return 1;
   }
 }
