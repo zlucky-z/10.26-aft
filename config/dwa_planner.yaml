@@ -35,7 +35,7 @@ dwa_local_planner:
     # 主体矩形到脚踏板后缘；脚踏板和脚尖安全区使用下方独立窄包络。
     footprint_front: 0.50 # 主体车体包络的最前方x坐标，单位m
     footprint_back: 0.14 # 主体车体包络的最后方x坐标，单位m
-    footprint_half_width: 0.315 # 主体车体包络的半宽，单位m（车体总宽0.63m）
+    footprint_half_width: 0.295 # 主体车体包络的半宽，单位m（车体总宽0.59m）
     footrest_start_x: 0.57 # 脚踏板包络开始的x坐标，单位m
     footrest_front_x: 0.75 # 脚踏板包络最前方x坐标，单位m
     footrest_half_width: 0.23 # 脚踏板包络的半宽，单位m
@@ -222,7 +222,7 @@ dwa_local_planner:
     # 保留（V2 墙隐形→16 次硬停，053316）。仅作用于候选评分；手柄直通
     # 校验与前向净距探针（prebrake/硬停）保持全视界判死，安全层不受影响。
     collision_veto_enabled: true # 是否启用碰撞判死视距解耦
-    toe_collision_margin_m: 0.10 # Toe-only forward safety buffer in meters
+    toe_collision_margin_m: 0.00 # 关闭脚尖额外碰撞前伸，只按实际脚尖前缘判断
     collision_veto_reaction_sec: 0.30 # 判死视界附加反应时间，单位s
     collision_veto_min_sec: 0.50 # 判死视界下限，单位s
     collision_veto_max_sec: 2.00 # 判死视界上限，单位s
@@ -243,7 +243,7 @@ dwa_local_planner:
     scoring_manual_turn_speed_gain: 0.80 # 方案A速度罚增益（仅激活期参与评分）
     # 方案C：意图方向候选全判死时输出冻结(0,0)（同 no_valid_trajectory 路径），
     # 不再选反向小弧——推左出右"不受控"根除。同号候选仍活时不触发。
-    intent_freeze_min_yawrate: 0.50 # 方案C激活的打杆门槛 rad/s（0=禁用）
+    intent_freeze_min_yawrate: 0.00 # 关闭意图方向全判死时的零速冻结
     # 原DWA只负责确定绕行大方向；二次选择只在同方向有效轨迹中匹配几何目标角。
     dwa_geometric_selector_enabled: false # 是否启用DWA几何二次轨迹选择
     # 9.24 转向修复：几何二次选择关闭。原 8° 航向增长帽在低速下把角速度
@@ -406,6 +406,7 @@ dwa_local_planner:
     manual_turn_forward_max_angle_deg: 115.0 # 手动转向判定的最大前向角，单位deg
     # Side hard stop uses only fused real radar points, not DWA scoring.
     side_hard_stop_circle_enabled: true # 是否启用侧边硬停止圆形保护
+    side_hard_stop_sweep_enabled: false # Predictive side sweep off; direct side-circle stop stays on
     # 圆心前移以覆盖车体前半部、脚踏板和脚尖安全区，保留车尾后部的非保护区域。
     side_hard_stop_circle_center_x: 0.30 # 侧边硬停止保护圆心x坐标，单位m
     side_hard_stop_circle_center_y: 0.0 # 侧边硬停止保护圆心y坐标，单位m
@@ -465,10 +466,10 @@ dwa_local_planner:
     speed_restore_stable_sec: 1.0 # 全部安全条件连续满足此时间后才恢复高速，单位s
     speed_restore_max_yawrate: 0.12 # 恢复高速要求车体/行驶方向稳定，允许角速度，单位rad/s
     # 保留给RViz距离线的基础显示宽度，按实测车体宽度设置。
-    front_corridor_width: 0.63 # 前方通道参考显示宽度，单位m
+    front_corridor_width: 0.59 # 前方通道参考显示宽度，单位m
     # 前方 DWA 触发区从左右雷达中心线开始，几何选簇使用同一套外扩梯形。
     front_trigger_start_x: 0.50 # 前方DWA触发区域起始x坐标，单位m
-    front_trigger_base_width: 0.63 # 前方DWA触发区域基础宽度，单位m
+    front_trigger_base_width: 0.59 # 前方DWA触发区域基础宽度，单位m
     front_trigger_expand_angle_deg: 5.0 # 前方触发区域随距离扩展的角度，单位deg
     # 控制器X/Y中心为100，89～111范围内视为死区。
     controller_x_dead_low: 89 # 控制器X轴死区下限

@@ -74,6 +74,7 @@
 #include "../src/runtime/dwa_node.h"
 #include "../src/safety/front_safety.h"
 #include "../src/fusion/dynamic_velocity_fusion.h"
+#include "../../soft-point/udp_FNC.h"
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -85,9 +86,9 @@
 #define RM_FUSED_MAX 65536   /* 融合点上限（双侧 × 截断值） */
 
 /* 前方探测区（基线 predictive_FNC.c 同款几何，单位换算为本工程米制）：
- * 车头 x=0.50m、半宽 0.315m、两角向外张 5° 的梯形。 */
+ * 车头 x=0.50m、半宽 0.295m、两角向外张 5° 的梯形。 */
 #define RM_CAR_FRONT_M 0.50
-#define RM_CAR_HALF_WID_M 0.315
+#define RM_CAR_HALF_WID_M 0.295
 #define RM_FRONT_DETECT_ANGLE_DEG 5.0
 /* 轮距（生产 WHEEL_TRACK_M=0.50，仅用于打印 wfb 轮差估计）。 */
 #define RM_WHEEL_TRACK_M 0.50
@@ -188,6 +189,10 @@ static int g_dry_run = 0;
 /* RM_DEBUG_CLOUD=1：每 20 帧打印原始/滤波近距光束与融合前方区域点，
  * 用于定位幻影近点（P9 排障，不影响数据面）。 */
 static int g_debug_cloud = 0;
+/* RM_UDP_POINT_DEBUG=1：把滤波后、车体自过滤前的统一融合点云
+ * 按 soft-point UDP 协议发给已连接的 DCJProject 可视化工具。 */
+static int g_udp_point_debug = 0;
+static int g_udp_point_ready = 0;
 static double g_last_dwa_chain_diag_time = 0.0;
 
 /* ============================ 小工具 ============================ */
@@ -302,6 +307,56 @@ static double rm_front_gap(const dwa_fusion_point_t *points, size_t count)
 static dwa_fusion_scan_t g_local_scan[2];
 static float g_local_ranges[2][RM_SCAN_MAX];
 
+/* soft-point 协议统一使用厘米：头部几何以 cm 存入 1 字节，点坐标以
+ * cm 存入有符号 int16（大端）。协议最多承载 1022 个点，超出时等距抽样，
+ * 保留整个视场覆盖，不改变实际规划点云。 */
+static uint8_t rm_cm_u8(float meters)
+{
+  long cm = lroundf(meters * 100.0f);
+  if (cm < 0) cm = 0;
+  if (cm > 255) cm = 255;
+  return (uint8_t)cm;
+}
+
+static void rm_send_pointcloud_debug(const dwa_fusion_point_t *points,
+                                    size_t point_count)
+{
+  enum { HEADER_SIZE = 7, MAX_POINTS = (MAX_DATA_SIZE - HEADER_SIZE) / 4 };
+  uint8_t payload[MAX_DATA_SIZE];
+  size_t send_count, i;
+  const dwa_planner_params_t *p = &g_node.params_snapshot;
+
+  if (!g_udp_point_debug || !g_udp_point_ready || points == NULL) return;
+  send_count = point_count;
+  if (send_count > MAX_POINTS) send_count = MAX_POINTS;
+
+  payload[0] = COM_PointCloudData_CMD;
+  payload[1] = rm_cm_u8(p->footprint_front + p->footprint_back);
+  payload[2] = rm_cm_u8(2.0f * p->footprint_half_width);
+  payload[3] = rm_cm_u8(p->footrest_front_x - p->footprint_front);
+  payload[4] = rm_cm_u8(2.0f * p->footrest_half_width);
+  payload[5] = rm_cm_u8(g_mounts[0].x);
+  payload[6] = rm_cm_u8(g_mounts[0].y);
+
+  for (i = 0; i < send_count; ++i) {
+    size_t src = i * point_count / send_count;
+    long x_cm = lroundf(points[src].x * 100.0f);
+    long y_cm = lroundf(points[src].y * 100.0f);
+    uint16_t x, y;
+    if (x_cm < -32768) x_cm = -32768;
+    if (x_cm > 32767) x_cm = 32767;
+    if (y_cm < -32768) y_cm = -32768;
+    if (y_cm > 32767) y_cm = 32767;
+    x = (uint16_t)(int16_t)x_cm;
+    y = (uint16_t)(int16_t)y_cm;
+    payload[HEADER_SIZE + i * 4 + 0] = (uint8_t)(x >> 8);
+    payload[HEADER_SIZE + i * 4 + 1] = (uint8_t)x;
+    payload[HEADER_SIZE + i * 4 + 2] = (uint8_t)(y >> 8);
+    payload[HEADER_SIZE + i * 4 + 3] = (uint8_t)y;
+  }
+  (void)udp_sendData(payload, HEADER_SIZE + send_count * 4);
+}
+
 static void rm_fuse(void)
 {
   int s;
@@ -344,6 +399,8 @@ static void rm_fuse(void)
         g_fused, RM_FUSED_MAX, &g_fused_count)) {
     fprintf(stderr, "[robot_main] 融合缓冲不足（points>=%zu）\n", g_fused_count);
   }
+  /* 在自车足迹过滤前发送，显示滤波后融合输出及可能被自车过滤掉的点。 */
+  rm_send_pointcloud_debug(g_fused, g_fused_count);
 
   /* 独立保存脚尖前向硬停候选：必须在通用自车足迹过滤之前提取。
    * 候选只进入安全净距统计，不进入 DWA 点云/栅格/走廊，因而不扩张
@@ -361,13 +418,11 @@ static void rm_fuse(void)
     for (r = 0; r < g_fused_count; ++r) {
       const float x = g_fused[r].x;
       const float y = g_fused[r].y;
-      const float dxl = x - 0.545f, dyl = y - 0.290f;
-      const float dxr = x - 0.545f, dyr = y + 0.290f;
       const float world_angle_deg = atan2f(y, x) * (float)(180.0 / M_PI);
       const dwa_point_t point = {x, y};
-      if (dxl * dxl + dyl * dyl < 0.10f * 0.10f ||
-        dxr * dxr + dyr * dyr < 0.10f * 0.10f ||
-        world_angle_deg > 170.0f || world_angle_deg < -170.0f)
+      /* 不再屏蔽雷达原点附近的 10 cm 区域，避免真实近障碍物被误删；
+       * 保留既有后向扇区排除。 */
+      if (world_angle_deg > 170.0f || world_angle_deg < -170.0f)
       {
         continue;
       }
@@ -922,7 +977,7 @@ static int rm_build_bridge_argv(const char *motor_port, int dry_run,
     "--wheel-track-m", "0.50",
     "--wheel-yaw-max-dt", "0.15",
     "--escape-stop-hold-sec", "0.0",
-    "--escape-half-width", "0.315",
+    "--escape-half-width", "0.295",
     "--escape-max-duration-sec", "2.0",
     "--no-controller-require-neutral",
     /* 9.27 去掉干预路径角速度 slew：默认 0.9 rad/s²（每 0.1s 周期 w 最多
@@ -978,6 +1033,8 @@ int main(int argc, char **argv)
     hal_log_set_min_level(HAL_LOG_ERROR); /* 控制台只留基线同款打印+错误 */
   }
   g_debug_cloud = (getenv("RM_DEBUG_CLOUD") != NULL);
+  g_udp_point_debug = (getenv("RM_UDP_POINT_DEBUG") != NULL &&
+                       strcmp(getenv("RM_UDP_POINT_DEBUG"), "0") != 0);
 
   for (i = 1; i < argc; ++i) {
     if (strcmp(argv[i], "--dry-run") == 0) {
@@ -1032,6 +1089,16 @@ int main(int argc, char **argv)
   g_mounts[1].yaw = fusion_params.right_laser_yaw;
   g_mounts[1].reversed = fusion_params.right_laser_angle_reversed;
   g_mounts[1].offset = fusion_params.right_laser_angle_offset;
+
+  if (g_udp_point_debug) {
+    if (udp_FNC_INT() == 0) {
+      g_udp_point_ready = 1;
+      printf("[点云UDP] 已启用，监听 0.0.0.0:8080；在 DCJProject 中连接后发送融合点云\n");
+    } else {
+      fprintf(stderr, "[点云UDP] 初始化失败，点云可视化关闭\n");
+      g_udp_point_debug = 0;
+    }
+  }
 
   /* 生产 -p 覆盖（start_dwa_motor_test.sh 的 DWA 节点参数）。 */
   params.max_reverse_velocity = 0.70f;
@@ -1320,3 +1387,4 @@ int main(int argc, char **argv)
   rm_exit(0); /* 跳过静态析构（SDK detached 读线程仍在跑） */
   return 0;   /* unreachable */
 }
+

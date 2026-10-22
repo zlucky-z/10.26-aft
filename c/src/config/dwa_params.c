@@ -35,7 +35,7 @@ void dwa_planner_params_defaults(dwa_planner_params_t *p)
   p->right_laser_angle_offset_deg = 0.0f;
 
   /* 车体包络：DwaFootprint 成员默认 + constructor 无覆盖 */
-  p->footprint_front = 0.34f; p->footprint_back = 0.32f; p->footprint_half_width = 0.315f;
+  p->footprint_front = 0.34f; p->footprint_back = 0.32f; p->footprint_half_width = 0.295f;
   p->footrest_start_x = 0.0f; p->footrest_front_x = 0.0f; p->footrest_half_width = 0.0f;
   p->toe_safety_front_x = 0.0f; p->toe_safety_half_width = 0.0f;
   p->footprint_padding = 0.0f;
@@ -126,7 +126,7 @@ void dwa_planner_params_defaults(dwa_planner_params_t *p)
   p->collision_veto_min_sec = 0.50f;
   p->collision_veto_max_sec = 2.00f;
   p->clearance_horizon_m = 1.60f;
-  p->toe_collision_margin_m = 0.10f;
+  p->toe_collision_margin_m = 0.0f;
   p->obstacle_cost_gain = 1.00f;
   p->to_goal_cost_gain = 0.80f;
   p->speed_cost_gain = 0.40f;
@@ -241,6 +241,7 @@ void dwa_planner_params_defaults(dwa_planner_params_t *p)
   p->manual_turn_forward_min_angle_deg = 65.0f;
   p->manual_turn_forward_max_angle_deg = 115.0f;
   p->side_hard_stop_circle_enabled = true;
+  p->side_hard_stop_sweep_enabled = true;
   p->side_hard_stop_circle_center_x = 0.51f;
   p->side_hard_stop_circle_center_y = 0.0f;
   p->side_hard_stop_circle_radius = 0.44f;
@@ -297,9 +298,9 @@ void dwa_planner_params_defaults(dwa_planner_params_t *p)
   p->speed_restore_max_yawrate = 0.12f;
 
   /* 前方触发区：constructor 的计算型默认（依赖雷达安装与半宽）。 */
-  p->front_corridor_width = 2.0f * p->footprint_half_width;             /* 0.63 */
+  p->front_corridor_width = 2.0f * p->footprint_half_width;             /* 0.59 */
   p->front_trigger_start_x = 0.5f * (p->left_laser_x + p->right_laser_x); /* 0.48 */
-  p->front_trigger_base_width = 2.0f * p->footprint_half_width;         /* 0.63 */
+  p->front_trigger_base_width = 2.0f * p->footprint_half_width;         /* 0.59 */
   p->front_trigger_expand_angle_deg = 5.0f;
 
   p->controller_x_dead_low = 89;  p->controller_x_dead_high = 111;
@@ -610,6 +611,7 @@ int dwa_planner_params_load(const char *yaml_path, dwa_planner_params_t *p)
   p->manual_turn_forward_min_angle_deg = dwa_clamp_value(dwa_yaml_get_double(d, "manual_turn_forward_min_angle_deg", p->manual_turn_forward_min_angle_deg), 0.0f, 90.0f);
   p->manual_turn_forward_max_angle_deg = dwa_clamp_value(dwa_yaml_get_double(d, "manual_turn_forward_max_angle_deg", p->manual_turn_forward_max_angle_deg), 90.0f, 180.0f);
   p->side_hard_stop_circle_enabled = dwa_yaml_get_bool(d, "side_hard_stop_circle_enabled", p->side_hard_stop_circle_enabled);
+  p->side_hard_stop_sweep_enabled = dwa_yaml_get_bool(d, "side_hard_stop_sweep_enabled", p->side_hard_stop_sweep_enabled);
   p->side_hard_stop_circle_center_x = dwa_yaml_get_double(d, "side_hard_stop_circle_center_x", p->side_hard_stop_circle_center_x);
   p->side_hard_stop_circle_center_y = dwa_yaml_get_double(d, "side_hard_stop_circle_center_y", p->side_hard_stop_circle_center_y);
   p->side_hard_stop_circle_radius = dwa_yaml_get_double(d, "side_hard_stop_circle_radius", p->side_hard_stop_circle_radius);

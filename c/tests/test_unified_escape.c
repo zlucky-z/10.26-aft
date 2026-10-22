@@ -49,12 +49,12 @@ int main(void)
   mb_config_defaults(&config);
   failures += expect(config.escape_stop_hold_sec == 0.0,
     "escape must start without the former 0.5-second delay");
-  failures += expect(fabs(config.escape_half_width - 0.315) < 1e-9,
-    "escape side clearance must use the 63 cm chassis width");
+  failures += expect(fabs(config.escape_half_width - 0.295) < 1e-9,
+    "escape side clearance must use the 59 cm chassis width");
   failures += expect(fabs(config.escape_max_duration_sec - 2.0) < 1e-9,
     "escape maximum duration must default to two seconds");
 
-  se_stop_escape_compensator_init(&escape, 0.0, 0.03, 0.5, 0.6, 0.315);
+  se_stop_escape_compensator_init(&escape, 0.0, 0.03, 0.5, 0.6, 0.295);
   cloud[0].x = 0.5; cloud[0].y = 0.68;  /* left clearance 0.41 */
   cloud[1].x = 0.5; cloud[1].y = -0.48; /* right clearance 0.21 */
   cloud[2].x = 0.55; cloud[2].y = 0.10; /* frontal bearing favors right */
@@ -65,7 +65,7 @@ int main(void)
     "clearly wider side must override frontal-bearing preference");
 
   /* Equal measured side clearances use the nearer frontal half as a bias. */
-  se_stop_escape_compensator_init(&escape, 0.0, 0.03, 0.5, 0.6, 0.315);
+  se_stop_escape_compensator_init(&escape, 0.0, 0.03, 0.5, 0.6, 0.295);
   cloud[0].x = 0.5; cloud[0].y = 0.47;
   cloud[1].x = 0.5; cloud[1].y = -0.47;
   cloud[2].x = 0.55; cloud[2].y = 0.10;
@@ -76,19 +76,33 @@ int main(void)
     "tied side clearances should turn away from the nearer frontal obstacle half");
 
   /* A newly blocked latched side must stop and latch out, not reverse escape. */
-  cloud[0].y = 0.68; /* left clearance 0.365 */
-  cloud[1].y = -0.34; /* right clearance 0.025, below the safety floor */
+  cloud[0].y = 0.70; /* left clearance 0.405 */
+  cloud[1].y = -0.32; /* right clearance 0.025, below the safety floor */
   se_stop_escape_compensator_update_cloud(&escape, cloud, 2, 10.1);
   decision = se_stop_escape_compensator_update(&escape,
     10.1, 0, 1, 1, 1, 0, 0);
-  failures += expect(!decision.active &&
+  failures += expect(decision.active && !decision.command_enabled &&
       strcmp(decision.reason, "selected_side_blocked") == 0,
-    "escape must stop and lock out when its selected side becomes unsafe");
+    "escape must command stop and lock out when its selected side becomes unsafe");
+
+  /* Even if the vehicle/output state changes and only the opposite side is
+   * safe, the held trigger must not reselect or reverse the escape direction. */
+  cloud[0].y = 0.40; /* left clearance 0.105 */
+  cloud[1].y = -0.32; /* right remains blocked; LEFT is now the only safe side */
+  se_stop_escape_compensator_update_cloud(&escape, cloud, 2, 10.14);
+  decision = se_stop_escape_compensator_update(&escape,
+    10.14, 0, 1, 0, 0, 0, 0);
+  failures += expect(decision.active && !decision.command_enabled &&
+      decision.direction == SE_DIRECTION_RIGHT &&
+      strcmp(decision.reason, "escape_locked_out") == 0,
+    "locked escape must keep its original direction until forward intent is released");
+
   decision = se_stop_escape_compensator_update(&escape,
     10.15, 0, 1, 1, 1, 0, 0);
-  failures += expect(!decision.active &&
+  failures += expect(decision.active && !decision.command_enabled &&
+      decision.direction == SE_DIRECTION_RIGHT &&
       strcmp(decision.reason, "escape_locked_out") == 0,
-    "blocked escape must not immediately re-enter while the trigger remains");
+    "blocked escape must stay stopped in the same lockout while the trigger remains");
 
   decision = se_stop_escape_compensator_update(&escape,
     10.2, 1, 1, 1, 1, 0, 0);
@@ -149,7 +163,7 @@ int main(void)
 
   /* Staleness after activation pauses output without ending the maneuver;
    * fresh sensing resumes the same direction without another start delay. */
-  se_stop_escape_compensator_init(&escape, 0.0, 0.03, 0.5, 0.6, 0.315);
+  se_stop_escape_compensator_init(&escape, 0.0, 0.03, 0.5, 0.6, 0.295);
   cloud[0].x = 0.60; cloud[0].y = 0.70;
   se_stop_escape_compensator_update_cloud(&escape, cloud, 1, 11.5);
   decision = se_stop_escape_compensator_update(&escape,
@@ -169,28 +183,28 @@ int main(void)
         decision.direction == latched,
       "fresh scan must resume the same escape without a new start delay");
 
-    cloud[0].x = 0.10; cloud[0].y = 0.34;
-    cloud[1].x = 0.10; cloud[1].y = -0.34;
+    cloud[0].x = 0.10; cloud[0].y = 0.32;
+    cloud[1].x = 0.10; cloud[1].y = -0.32;
     se_stop_escape_compensator_update_cloud(&escape, cloud, 2, 12.23);
     decision = se_stop_escape_compensator_update(&escape,
       12.24, 0, 1, 1, 1, 0, 0);
-    failures += expect(!decision.active &&
+    failures += expect(decision.active && !decision.command_enabled &&
         strcmp(decision.reason, "selected_side_blocked") == 0,
-      "unsafe selected side must stop and clear the escape direction");
+      "unsafe selected side must stop and retain the escape direction");
 
     cloud[0].y = 0.60;
     cloud[1].y = -0.60;
     se_stop_escape_compensator_update_cloud(&escape, cloud, 2, 12.25);
     decision = se_stop_escape_compensator_update(&escape,
       12.26, 0, 1, 1, 1, 0, 0);
-    failures += expect(!decision.active &&
+    failures += expect(decision.active && !decision.command_enabled &&
         strcmp(decision.reason, "escape_locked_out") == 0,
       "a newly clear scan must not silently resume a blocked escape");
   }
 
   /* Frontal wall returns just outside the footprint width must not be
    * mistaken for blocked left/right escape sectors. */
-  se_stop_escape_compensator_init(&escape, 0.0, 0.03, 0.5, 0.6, 0.315);
+  se_stop_escape_compensator_init(&escape, 0.0, 0.03, 0.5, 0.6, 0.295);
   cloud[0].x = 0.90; cloud[0].y = 0.28;
   cloud[1].x = 0.90; cloud[1].y = -0.29;
   cloud[2].x = 0.80; cloud[2].y = 0.0;
@@ -205,9 +219,9 @@ int main(void)
     "unobserved lateral sectors must not be assumed clear for escape");
 
   /* A point actually beside the chassis remains a side hazard. */
-  se_stop_escape_compensator_init(&escape, 0.0, 0.03, 0.5, 0.6, 0.315);
-  cloud[0].x = 0.10; cloud[0].y = 0.34;
-  cloud[1].x = 0.10; cloud[1].y = -0.34;
+  se_stop_escape_compensator_init(&escape, 0.0, 0.03, 0.5, 0.6, 0.295);
+  cloud[0].x = 0.10; cloud[0].y = 0.32;
+  cloud[1].x = 0.10; cloud[1].y = -0.32;
   se_stop_escape_compensator_update_cloud(&escape, cloud, 2, 11.6);
   decision = se_stop_escape_compensator_update(&escape,
     11.6, 0, 1, 1, 1, 0, 0);
@@ -217,7 +231,7 @@ int main(void)
 
   /* DWA handoff requires a sustained command, then sustained measured forward
    * wheel motion. A failed trial resumes the same latched direction. */
-  se_stop_escape_compensator_init(&escape, 0.0, 0.03, 0.9, 0.6, 0.315);
+  se_stop_escape_compensator_init(&escape, 0.0, 0.03, 0.9, 0.6, 0.295);
   escape.max_duration_sec = 10.0; /* This block exercises handoff, not timeout. */
   cloud[0].x = 0.60; cloud[0].y = 0.70;
   se_stop_escape_compensator_update_cloud(&escape, cloud, 1, 12.0);
@@ -301,7 +315,7 @@ int main(void)
 
   /* The configured hard limit stops one escape and locks it out until the
    * initiating forward intent or stop trigger clears. */
-  se_stop_escape_compensator_init(&escape, 0.0, 0.03, 0.5, 0.6, 0.315);
+  se_stop_escape_compensator_init(&escape, 0.0, 0.03, 0.5, 0.6, 0.295);
   cloud[0].x = 0.60; cloud[0].y = 0.70;
   se_stop_escape_compensator_update_cloud(&escape, cloud, 1, 20.0);
   decision = se_stop_escape_compensator_update(&escape,
@@ -316,13 +330,14 @@ int main(void)
   se_stop_escape_compensator_update_cloud(&escape, cloud, 1, 22.0);
   decision = se_stop_escape_compensator_update(&escape,
     22.0, 0, 1, 1, 1, 0, 0);
-  failures += expect(!decision.active && !decision.command_enabled &&
+  failures += expect(decision.active && !decision.command_enabled &&
+      decision.direction == SE_DIRECTION_LEFT &&
       strcmp(decision.reason, "duration_limit") == 0,
-    "escape must stop at its two-second maximum duration");
+    "escape must stop at its two-second maximum duration and retain its direction");
   se_stop_escape_compensator_update_cloud(&escape, cloud, 1, 22.01);
   decision = se_stop_escape_compensator_update(&escape,
     22.01, 0, 1, 1, 1, 0, 0);
-  failures += expect(!decision.active &&
+  failures += expect(decision.active && !decision.command_enabled &&
       strcmp(decision.reason, "escape_locked_out") == 0,
     "duration timeout must not immediately restart while trigger remains");
   decision = se_stop_escape_compensator_update(&escape,
@@ -470,6 +485,36 @@ int main(void)
   failures += expect(g_frame_count > 0,
     "sensor interlock must continue sending neutral/status frames");
   mb_stop_and_close(&bridge);
+
+  /* Reverse manual bypass preserves native joystick Y when no linear speed
+   * limit is active; gear-only intervention must not remap the throttle. */
+  memset(&bridge, 0, sizeof(bridge));
+  mb_config_defaults(&config);
+  bridge.config = config;
+  g_now = 40.0;
+  bridge.last_raw_cmd_time = g_now;
+  bridge.last_cmd_time = g_now;
+  bridge.last_raw_linear = -0.70;
+  bridge.last_linear = -0.70;
+  bridge.last_controller_x = 31;
+  bridge.last_controller_y = 0;
+  {
+    int x = -1, y = -1;
+    char state[MB_STATE_MAX];
+    failures += expect(mb_raw_reverse_passthrough_xy(
+        &bridge, g_now, &x, &y, state) == 1 && x == 31 && y == 0,
+      "unlimited reverse must pass the original controller X/Y through");
+    bridge.output_gear_closed_loop_active = 1;
+    failures += expect(mb_raw_reverse_passthrough_xy(
+        &bridge, g_now, &x, &y, state) == 1 && y == 0,
+      "gear-only override must not remap raw reverse Y");
+    bridge.last_linear = -0.35;
+    failures += expect(mb_raw_reverse_passthrough_xy(
+        &bridge, g_now, &x, &y, state) == 1 &&
+        y == (int)mp_py_round((double)MP_CENTER +
+          ((double)0 - (double)MP_CENTER) * 0.5),
+      "active half-speed limit must scale raw reverse joystick deflection");
+  }
 
   if (failures != 0) return 1;
   puts("unified escape tests passed");

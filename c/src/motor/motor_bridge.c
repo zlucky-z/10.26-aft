@@ -2104,10 +2104,8 @@ int mb_raw_reverse_passthrough_xy(mb_bridge_t *b, double now,
 {
   int controller_x, controller_y;
   int limited_controller_y;
-  int mapped_x, mapped_y;
   int angular_intervened;
   double linear_scale;
-  double reverse_reference;
 
   if (!mb_raw_command_is_recent(b, now)) return 0;
   if (b->last_cmd_time <= 0.0 ||
@@ -2117,25 +2115,27 @@ int mb_raw_reverse_passthrough_xy(mb_bridge_t *b, double now,
 
   controller_x = mp_clamp_coord((double)b->last_controller_x);
   controller_y = mp_clamp_coord((double)b->last_controller_y);
-  /* Keep the controller's reverse-turn X input, but map the reverse throttle
-   * from the signed command through the current effective gear reference.
-   * The old path scaled the raw Y around center using only last_raw_linear /
-   * last_linear and therefore kept the fixed 0.70 m/s reverse reference even
-   * after the stationary-turn ring forced gear=1. */
+  /* Preserve the controller's native reverse throttle. Gear selection is
+   * sent independently in the protocol frame. Re-encoding last_linear via
+   * mb_motion_to_xy() couples this path to the speed table and can turn a
+   * full raw reverse command into a small Y value even in open space. Only
+   * scale raw joystick deflection when an upstream safety limiter actually
+   * reduced the reverse linear command (e.g. the inner speed ring). */
   linear_scale = fabs(b->last_linear) / fabs(b->last_raw_linear);
   if (linear_scale > 1.0) linear_scale = 1.0;
   if (linear_scale < 0.0) linear_scale = 0.0;
-  reverse_reference = mb_y_scale_reference_now(b);
-  mb_motion_to_xy(b, b->last_linear, 0.0, &mapped_x, &mapped_y);
-  (void)mapped_x;
-  limited_controller_y = mapped_y;
-  if (linear_scale < 0.999 ||
-      b->output_gear_closed_loop_active) {
+  limited_controller_y = controller_y;
+  if (linear_scale < 0.999) {
+    const double center = (double)MP_CENTER;
+    limited_controller_y = mp_clamp_coord(center +
+      ((double)controller_y - center) * linear_scale);
+  }
+  if (linear_scale < 0.999 || b->output_gear_closed_loop_active) {
     static int reverse_cap_log_key;
     hal_log_throttle(now, 500, &reverse_cap_log_key, HAL_LOG_INFO,
-      "reverse_gear_map raw=%.3f cmd=%.3f scale=%.3f gear=%d ref=%.3f y=%d->%d",
+      "reverse_raw_y raw=%.3f cmd=%.3f scale=%.3f gear=%d gear_override=%d y=%d->%d",
       b->last_raw_linear, b->last_linear, linear_scale,
-      mb_current_output_gear(b), reverse_reference,
+      mb_current_output_gear(b), b->output_gear_closed_loop_active,
       controller_y, limited_controller_y);
   }
   angular_intervened =

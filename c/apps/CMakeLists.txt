@@ -9,7 +9,7 @@ target_link_libraries(bridge_main PRIVATE dwa_motor m)
 # P9：单进程整机入口（雷达×2 + 滤波×2 + 融合 + DWA + 电机桥）。
 # 仅 POSIX（cspc SDK 双实例 + termios 串口 + pthread）。
 if(NOT WIN32)
-  add_executable(robot_main robot_main.c)
+  add_executable(robot_main robot_main.c ../../soft-point/udp_FNC.c)
   target_link_libraries(robot_main PRIVATE
     dwa_runtime
     dwa_perception

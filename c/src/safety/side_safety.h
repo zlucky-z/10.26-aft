@@ -19,6 +19,7 @@ extern "C" {
 
 typedef struct {
   bool circle_enabled;
+  bool sweep_enabled;
   float circle_center_x;
   float circle_center_y;
   float circle_radius;
@@ -36,6 +37,7 @@ static inline dwa_side_safety_config_t dwa_side_safety_config_default(void)
 {
   dwa_side_safety_config_t config;
   config.circle_enabled = true;
+  config.sweep_enabled = true;
   config.circle_center_x = 0.51f;
   config.circle_center_y = 0.0f;
   config.circle_radius = 0.44f;

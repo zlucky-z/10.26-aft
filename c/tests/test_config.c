@@ -65,7 +65,7 @@ int main(int argc, char **argv)
   expect_double("right_laser_yaw", params.right_laser_yaw, 1.5707963267948966);
   expect_double("footprint_front", params.footprint_front, 0.50);
   expect_double("footprint_back", params.footprint_back, 0.14);
-  expect_double("footprint_half_width", params.footprint_half_width, 0.315);
+  expect_double("footprint_half_width", params.footprint_half_width, 0.295);
   expect_double("footrest_start_x", params.footrest_start_x, 0.57);
   expect_double("footrest_front_x", params.footrest_front_x, 0.75);
   expect_double("footrest_half_width", params.footrest_half_width, 0.23);
@@ -123,7 +123,7 @@ int main(int argc, char **argv)
   expect_double("collision_veto_min_sec", params.collision_veto_min_sec, 0.50);
   expect_double("collision_veto_max_sec", params.collision_veto_max_sec, 2.00);
   expect_double("clearance_horizon_m", params.clearance_horizon_m, 1.60);
-  expect_double("toe_collision_margin_m", params.toe_collision_margin_m, 0.10);
+  expect_double("toe_collision_margin_m", params.toe_collision_margin_m, 0.00);
   expect_double("front_turn_bias_start_m", params.front_turn_bias_start_m, 0.40);
   expect_double("front_turn_bias_full_m", params.front_turn_bias_full_m, 0.30);
   expect_double("front_turn_bias_side_clearance_m", params.front_turn_bias_side_clearance_m, 0.60);
@@ -132,7 +132,7 @@ int main(int argc, char **argv)
   /* 10.10 方案A+C：窄缝塌缩评分层修复（yaml 新键） */
   expect_double("scoring_manual_turn_min_yawrate", params.scoring_manual_turn_min_yawrate, 0.50);
   expect_double("scoring_manual_turn_speed_gain", params.scoring_manual_turn_speed_gain, 0.80);
-  expect_double("intent_freeze_min_yawrate", params.intent_freeze_min_yawrate, 0.50);
+  expect_double("intent_freeze_min_yawrate", params.intent_freeze_min_yawrate, 0.00);
   /* 10.10 刀2：防抖锥直通化（valid_straight 路径手动转向不再压缩） */
   expect_int("forced_straight_manual_passthrough", params.forced_straight_manual_passthrough, 1);
   expect_double("dwa_geometric_handoff_heading_agree", params.dwa_geometric_handoff_heading_agree, 12.0 * TEST_PI / 180.0);
@@ -157,12 +157,14 @@ int main(int argc, char **argv)
   expect_double("moving_prebrake_y_down_rate_min", params.moving_prebrake_y_down_rate_min, 30.0);
   expect_double("moving_prebrake_y_down_rate_max", params.moving_prebrake_y_down_rate_max, 80.0);
   expect_double("side_detection_angle_deg", params.side_detection_angle_deg, 20.0);
-  expect_double("side_hard_stop_circle_radius", params.side_hard_stop_circle_radius, 0.40);
+  expect_int("side_hard_stop_sweep_enabled", params.side_hard_stop_sweep_enabled, 0);
+  expect_double("side_hard_stop_circle_radius", params.side_hard_stop_circle_radius, 0.50);
   expect_double("front_hard_stop_escape_linear_speed", params.front_hard_stop_escape_linear_speed, 0.00);
   expect_double("front_hard_stop_escape_yawrate", params.front_hard_stop_escape_yawrate, 0.50);
   expect_double("stop_escape_trigger_sec", params.stop_escape_trigger_sec, 0.00);
   expect_double("side_wall_hold_min_yawrate", params.side_wall_hold_min_yawrate, 0.04);
-  expect_double("front_corridor_width", params.front_corridor_width, 0.63);
+  expect_double("front_corridor_width", params.front_corridor_width, 0.59);
+  expect_double("front_trigger_base_width", params.front_trigger_base_width, 0.59);
   expect_double("front_trigger_start_x", params.front_trigger_start_x, 0.50);
   expect_double("front_trigger_expand_angle_deg", params.front_trigger_expand_angle_deg, 5.0);
   expect_int("controller_x_dead_low", params.controller_x_dead_low, 89);
@@ -185,7 +187,7 @@ int main(int argc, char **argv)
   expect_double("config.obstacle_range", config.obstacle_range, 3.50);
   /* 10.08 Fix V3b：config 拷贝抽查（净距视界固定弧长 1.60m） */
   expect_double("config.clearance_horizon_m", config.clearance_horizon_m, 1.60);
-  expect_double("config.toe_collision_margin_m", config.toe_collision_margin_m, 0.10);
+  expect_double("config.toe_collision_margin_m", config.toe_collision_margin_m, 0.00);
   expect_double("config.front_turn_bias_start_m", config.front_turn_bias_start_m, 0.40);
   expect_double("config.front_turn_bias_full_m", config.front_turn_bias_full_m, 0.30);
   expect_double("config.front_turn_bias_side_clearance_m", config.front_turn_bias_side_clearance_m, 0.60);
@@ -198,9 +200,12 @@ int main(int argc, char **argv)
   expect_double("default max_velocity", defaults.max_velocity, 1.00);
   expect_double("default trajectory_reference_x", defaults.trajectory_reference_x, 0.297);
   expect_double("default footprint_front", defaults.footprint_front, 0.34);
+  expect_double("default footprint_half_width", defaults.footprint_half_width, 0.295);
+  expect_double("default toe_collision_margin_m", defaults.toe_collision_margin_m, 0.00);
+  expect_double("default intent_freeze_min_yawrate", defaults.intent_freeze_min_yawrate, 0.00);
   expect_int("default grid_unknown_is_obstacle", defaults.grid_unknown_is_obstacle, 1);
   expect_double("default front_trigger_start_x", defaults.front_trigger_start_x, 0.48);
-  expect_double("default front_corridor_width", defaults.front_corridor_width, 0.63);
+  expect_double("default front_corridor_width", defaults.front_corridor_width, 0.59);
   expect_double("default stop_escape_trigger_sec", defaults.stop_escape_trigger_sec, 1.0);
   expect_double("default front_hard_stop_escape_yawrate", defaults.front_hard_stop_escape_yawrate, 0.30);
   expect_int("yaml near_obstacle_yawrate_limit_enabled", params.near_obstacle_yawrate_limit_enabled, 0);

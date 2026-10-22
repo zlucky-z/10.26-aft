@@ -146,7 +146,7 @@ planner_side_hard_stop_decision_t dwa_evaluate_side_sweep_guard(
 {
   planner_side_hard_stop_decision_t decision =
     planner_side_hard_stop_decision_default();
-  if (!config->circle_enabled || !perception_fresh ||
+  if (!config->sweep_enabled || !config->circle_enabled || !perception_fresh ||
     command->v < -config->deadband_linear)
   {
     return decision;

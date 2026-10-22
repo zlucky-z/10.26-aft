@@ -26,7 +26,7 @@ static inline dwa_front_safety_config_t dwa_front_safety_config_default(void)
 {
   dwa_front_safety_config_t config;
   config.trigger_start_x = 0.48f;
-  config.trigger_base_width = 0.63f;
+  config.trigger_base_width = 0.59f;
   config.trigger_expand_angle_deg = 5.0f;
   return config;
 }

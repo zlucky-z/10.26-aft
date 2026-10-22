@@ -45,6 +45,11 @@ add_executable(test_unified_escape test_unified_escape.c)
 target_link_libraries(test_unified_escape dwa_motor m)
 add_test(NAME unified_escape COMMAND test_unified_escape)
 
+# Predictive side sweep is independent from the direct side-circle hard stop.
+add_executable(test_side_sweep_switch test_side_sweep_switch.c)
+target_link_libraries(test_side_sweep_switch dwa_safety m)
+add_test(NAME side_sweep_switch COMMAND test_side_sweep_switch)
+
 # Front-corner returns must not masquerade as a close physical side wall.
 add_executable(test_side_clearance_sector test_side_clearance_sector.c)
 target_link_libraries(test_side_clearance_sector dwa_runtime)

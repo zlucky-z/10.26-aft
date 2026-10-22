@@ -233,6 +233,7 @@ typedef struct {
   float side_detection_angle_deg;
   float manual_turn_forward_min_angle_deg, manual_turn_forward_max_angle_deg;
   bool side_hard_stop_circle_enabled;
+  bool side_hard_stop_sweep_enabled;
   float side_hard_stop_circle_center_x, side_hard_stop_circle_center_y;
   float side_hard_stop_circle_radius;
   float side_hard_stop_reverse_escape_yawrate;

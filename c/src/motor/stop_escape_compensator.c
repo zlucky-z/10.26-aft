@@ -54,6 +54,7 @@ void se_stop_escape_compensator_init(
   c->forward_motion_since = -1.0;
   c->handoff_active = 0;
   c->inhibited_until_rearm = 0;
+  c->stop_while_locked_out = 0;
   c->direction = SE_DIRECTION_NONE;
   c->last_direction = SE_DIRECTION_NONE;
   c->active = 0;
@@ -69,6 +70,7 @@ void se_stop_escape_compensator_reset(se_stop_escape_compensator_t *c)
   c->forward_motion_since = -1.0;
   c->handoff_active = 0;
   c->inhibited_until_rearm = 0;
+  c->stop_while_locked_out = 0;
   c->direction = SE_DIRECTION_NONE;
   c->active = 0;
 }
@@ -150,7 +152,8 @@ se_direction_t se_stop_escape_compensator_choose_direction(
   return SE_DIRECTION_NONE;
 }
 
-static void se_stop_escape_inhibit(se_stop_escape_compensator_t *c)
+static void se_stop_escape_inhibit(se_stop_escape_compensator_t *c,
+  int stop_until_rearm)
 {
   c->stop_since = -1.0;
   c->started_at = -1.0;
@@ -160,8 +163,9 @@ static void se_stop_escape_inhibit(se_stop_escape_compensator_t *c)
   c->forward_motion_since = -1.0;
   c->handoff_active = 0;
   c->active = 0;
-  c->direction = SE_DIRECTION_NONE;
+  /* Keep selected direction until trigger is released. */
   c->inhibited_until_rearm = 1;
+  c->stop_while_locked_out = stop_until_rearm;
 }
 
 se_stop_escape_decision_t se_stop_escape_compensator_update_with_turn(
@@ -197,7 +201,7 @@ se_stop_escape_decision_t se_stop_escape_compensator_update_with_turn(
 
   if (manual_turn_direction != SE_DIRECTION_NONE) {
     if (c->active || (vehicle_stopped && normal_output_stopped)) {
-      se_stop_escape_inhibit(c);
+      se_stop_escape_inhibit(c, 0);
     }
     d.direction = manual_turn_direction;
     d.reason = "manual_turn_takeover";
@@ -205,18 +209,20 @@ se_stop_escape_decision_t se_stop_escape_compensator_update_with_turn(
   }
 
   if (c->inhibited_until_rearm) {
-    if (!vehicle_stopped || !normal_output_stopped) {
-      c->inhibited_until_rearm = 0;
-    } else {
-      d.reason = "escape_locked_out";
-      return d;
+    if (c->stop_while_locked_out) {
+      d.active = 1;
     }
+    d.direction = c->direction;
+    d.reason = "escape_locked_out";
+    return d;
   }
 
   if (c->active) {
     if (c->max_duration_sec > 0.0 && c->started_at >= 0.0 &&
         now - c->started_at >= c->max_duration_sec) {
-      se_stop_escape_inhibit(c);
+      d.direction = c->direction;
+      se_stop_escape_inhibit(c, 1);
+      d.active = 1;
       d.reason = "duration_limit";
       return d;
     }
@@ -235,7 +241,9 @@ se_stop_escape_decision_t se_stop_escape_compensator_update_with_turn(
       const double latched = c->direction == SE_DIRECTION_LEFT ?
         c->left_clearance : c->right_clearance;
       if (!isfinite(latched) || latched < SE_ESCAPE_SIDE_MIN_CLEARANCE) {
-        se_stop_escape_inhibit(c);
+        d.direction = c->direction;
+        se_stop_escape_inhibit(c, 1);
+        d.active = 1;
         d.reason = "selected_side_blocked";
         return d;
       }
@@ -327,6 +335,7 @@ se_stop_escape_decision_t se_stop_escape_compensator_update_with_turn(
   if (c->direction == SE_DIRECTION_NONE || c->yawrate <= 0.0) {
     if (vehicle_stopped && normal_output_stopped) {
       c->inhibited_until_rearm = 1;
+      c->stop_while_locked_out = 1;
     }
     d.reason = "no_safe_side";
     return d;

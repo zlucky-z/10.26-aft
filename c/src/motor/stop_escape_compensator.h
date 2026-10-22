@@ -64,6 +64,7 @@ typedef struct {
   double forward_motion_since;
   int handoff_active;
   int inhibited_until_rearm;
+  int stop_while_locked_out;
   se_direction_t direction;
   se_direction_t last_direction;
   int active;

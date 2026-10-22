@@ -113,7 +113,7 @@ static inline dwa_config_t dwa_config_default(void)
   config.collision_veto_min_sec = 0.50f;
   config.collision_veto_max_sec = 2.00f;
   config.clearance_horizon_m = 1.60f;
-  config.toe_collision_margin_m = 0.10f;
+  config.toe_collision_margin_m = 0.0f;
   config.intent_lookahead = 2.00f;
   config.intent_yaw_to_lateral = 1.00f;
   config.obstacle_cost_gain = 1.00f;
