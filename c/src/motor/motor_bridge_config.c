@@ -68,7 +68,7 @@ void mb_config_defaults(mb_config_t *c)
   c->escape_forward_deadband = 0.02;
   c->escape_turn_yawrate = 0.5;
   c->escape_cloud_timeout = 0.60;
-  c->escape_half_width = 0.285;
+  c->escape_half_width = 0.295;
   c->escape_max_duration_sec = 2.0;
   c->radar_timeout = 0.5;
   copy_str(c->horn_topic, sizeof(c->horn_topic), "/wheelchair/horn_cmd");

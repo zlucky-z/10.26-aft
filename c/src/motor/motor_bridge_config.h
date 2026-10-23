@@ -36,7 +36,7 @@ typedef struct {
   double escape_forward_deadband; /* 0.02 */
   double escape_turn_yawrate;    /* 0.5 */
   double escape_cloud_timeout;   /* 0.60 */
-  double escape_half_width;      /* 0.285 */
+  double escape_half_width;      /* 0.295 */
   double escape_max_duration_sec; /* 2.0 */
   double radar_timeout;          /* 0.5 */
   char horn_topic[MB_TOPIC_MAX]; /* "/wheelchair/horn_cmd" */

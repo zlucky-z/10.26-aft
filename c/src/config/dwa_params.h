@@ -236,14 +236,6 @@ typedef struct {
   bool side_hard_stop_sweep_enabled;
   float side_hard_stop_circle_center_x, side_hard_stop_circle_center_y;
   float side_hard_stop_circle_radius;
-  /* 10.23 前后分段保护 + 通道模式 */
-  bool side_hard_stop_trapezoid_enabled;
-  float side_hard_stop_trap_front_x;
-  float side_hard_stop_trap_rear_x;
-  float side_hard_stop_trap_front_half_width;
-  float side_hard_stop_trap_rear_half_width_corridor;
-  float side_hard_stop_trap_rear_half_width_open;
-  float side_hard_stop_corridor_detection_threshold;
   float side_hard_stop_reverse_escape_yawrate;
   float side_hard_stop_wheel_track_m;
   float side_hard_stop_sweep_prediction_sec, side_hard_stop_sweep_brake_sec;
@@ -318,7 +310,6 @@ typedef struct {
   float dwa_corridor_track_lateral_tolerance;
   float dwa_corridor_track_heading_tolerance;      /* rad */
   float dwa_corridor_path_filter_alpha, dwa_corridor_trajectory_lookahead;
-  float dwa_corridor_predict_time;                   /* s，<=0 禁用 */
   float dwa_corridor_lateral_weight, dwa_corridor_heading_weight;
   float dwa_corridor_progress_weight;
 } dwa_planner_params_t;

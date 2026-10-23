@@ -240,7 +240,14 @@ void dwa_node_tick(dwa_node_t *node)
         const dwa_fused_base_point_t *sample = &fused_cloud_points[i];
         const dwa_point_t *point = &sample->point;
         if (!isfinite(point->x) || !isfinite(point->y)) continue;
-        if (p->rider_self_filter_enabled &&
+        if (!sample->front_safety_only &&
+            dwa_point_inside_footprint_self_filter(point->x, point->y,
+              &node->config.footprint, 0.0f)) {
+          continue;
+        }
+        if (!sample->front_safety_only &&
+            !sample->side_safety_only &&
+            p->rider_self_filter_enabled &&
             point->x >= p->rider_self_filter_start_x &&
             point->x <= p->rider_self_filter_front_x &&
             fabsf(point->y) <= p->rider_self_filter_half_width) {
@@ -410,12 +417,14 @@ void dwa_node_tick(dwa_node_t *node)
   }
   dynamic_input.near_obstacle_gear_active = node->near_obstacle_gear_latched;
 
-  /* 前方硬停止只保留当前新鲜融合点云中的雷达最小量程接触保护。
-   * 脚尖 front_clearance 不参与此门槛；障碍未进入接触量程时交给
-   * DWA 轨迹安全检查决定是否继续转弯。 */
+  /* 硬停止只按当前新鲜融合点云的当前周期判定，不做跨周期锁存。
+   * 障碍物离开前方硬停止区域后，下一周期立即允许重新规划/运动；
+   * 障碍物仍在前方时，当前周期仍由安全控制强制停止。 */
   hard_stop_condition = fused_cloud_fresh &&
-    isfinite(obstacle_diag.nearest_front_radar_distance) &&
-    obstacle_diag.nearest_front_radar_distance <= p->radar_contact_distance;
+    ((isfinite(obstacle_diag.nearest_front_radar_distance) &&
+    obstacle_diag.nearest_front_radar_distance <= p->radar_contact_distance) ||
+    (isfinite(dynamic_input.front_clearance) &&
+    dynamic_input.front_clearance <= 0.0f));
   node->hard_stop_latched = hard_stop_condition;
   node->hard_stop_clear_cycles = 0;
   hard_stop_latched = node->hard_stop_latched;
@@ -638,10 +647,27 @@ void dwa_node_tick(dwa_node_t *node)
         node->bypass_near_zone_ramp_active = false;
         node->bypass_near_zone_ramp_done = false;
       }
-      /* 脚尖安全探针只用于诊断、DWA接管和轨迹安全参考。
-       * 它不能把 DWA 的速度目标直接压到 0：脚尖探针可能先于
-       * 可行转弯轨迹进入负值，而完整脚踏/脚尖包络仍由 DWA 轨迹
-       * 碰撞检查负责。若没有安全轨迹，规划结果本身负责停车。 */
+      /* B1(10.09)：锁存态近距减速——前净距 < moving_prebrake_profile_
+       * zero_distance(0.40m) 时 target 按 forward_speed_limit×净距/zero
+       * 线性归零（净距≤0 → 0）。103434 末段实锤：F1d 锁存态无近距减速，
+       * cap 恒 0.70 到底，净距 0.05m 仍 sel 0.73——配合零余量碰撞判定
+       * （障碍格中心须进足迹矩形才判死）形成末段挤压。
+       * 复用既有 prebrake profile 的 zero 距离语义（曲线现成，无新参数）；
+       * 只在近距段生效：净距 ≥0.40m 两态行为不变。F1c 教训（2.2m 起
+       * 压速与 DWA 绕行抢速度）不复发——起压点仅 0.40m 接触段。
+       * 不依赖实速；净距无效（INF）时不介入。 */
+      if (node->bypass_near_zone_latched) {
+        const float zero_v = dc->moving_prebrake_profile_zero_distance;
+        if (zero_v > 0.0f && isfinite(clearance) && clearance < zero_v) {
+          float near_cap = dc->forward_speed_limit * (clearance / zero_v);
+          if (near_cap < 0.0f) {
+            near_cap = 0.0f;
+          }
+          if (near_cap < target) {
+            target = near_cap;
+          }
+        }
+      }
       raw_decision.target_max_velocity = target;
       raw_decision.held_forward_speed = target;
     }
@@ -926,20 +952,6 @@ void dwa_node_tick(dwa_node_t *node)
       node->corridor_guide_config.heading_error_weight;
     planning_config.path_reference.progress_weight =
       node->corridor_guide_config.progress_weight;
-    /* S弯(10.22)：通道激活时收缩本周期预测时域（对齐 ltw_dwa
-     * DWA_COR_PREDICT_TIME=1.2，09-25 S 弯三件套之一）。
-     * 根因：2.0s 恒(v,w)弧在 ~90cm 弯通道末端横向偏移 ~35cm，
-     * 弯道所需弧率以上的候选全部在预测窗内"扫到墙"被整段判死，
-     * S 弯中段转弯候选枯竭→(0,0) fallback→摇摇车。收缩后弯道
-     * 内候选只需保证 1.2s 弧上安全。仅改本周期评分副本
-     * planning_config（yaml 基线/对拍不动）；前向净距探针保持全
-     * lookahead 视界判死（dwa_scoring.c Fix V 豁免），安全层不受
-     * 影响。<=0 表示禁用收缩。 */
-    if (p->dwa_corridor_predict_time > 0.0f &&
-      planning_config.predict_time > p->dwa_corridor_predict_time)
-    {
-      planning_config.predict_time = p->dwa_corridor_predict_time;
-    }
   } else {
     planning_config.path_reference.enabled = false;
   }

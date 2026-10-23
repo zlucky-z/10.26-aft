@@ -35,7 +35,7 @@ dwa_local_planner:
     # 主体矩形到脚踏板后缘；脚踏板和脚尖安全区使用下方独立窄包络。
     footprint_front: 0.50 # 主体车体包络的最前方x坐标，单位m
     footprint_back: 0.14 # 主体车体包络的最后方x坐标，单位m
-    footprint_half_width: 0.285 # 主体车体包络的半宽，单位m（车体总宽0.57m）
+    footprint_half_width: 0.295 # 主体车体包络的半宽，单位m（车体总宽0.59m）
     footrest_start_x: 0.57 # 脚踏板包络开始的x坐标，单位m
     footrest_front_x: 0.75 # 脚踏板包络最前方x坐标，单位m
     footrest_half_width: 0.23 # 脚踏板包络的半宽，单位m
@@ -53,7 +53,7 @@ dwa_local_planner:
     # 注意：不影响安全诊断（禁转区/侧边点集/侧硬停）——9.24 曾把过滤
     # 扩到安全诊断并将起点下探 0.50，实测转向剧烈抖动，已回滚。
     # 9.27 对齐 9.20 基线：基线障碍表无骑乘过滤；该宽过滤区把近距
-    # （<0.57m）宽墙整面删掉导致正前避障失效，先关闭实测。
+    # （<0.59m）宽墙整面删掉导致正前避障失效，先关闭实测。
     # 9.27 R3：S弯实测（054326）膝盖点回障碍表（fwd恒距0.35~0.75最长
     # 21圈、0.5m桶391圈），clearance 0.34~0.54 越过软边距在近平局评分里
     # 逐圈翻转天平加重乱转。恢复过滤剔膝盖；撞墙风险由"速度模块已关+
@@ -205,8 +205,7 @@ dwa_local_planner:
     obstacle_cost_gain: 1.00 # 障碍物代价权重
     # 9.24 转向修复：障碍代价软边距（对齐 9.20 基线）。净距大于该值时障碍代价
     # 归零——"够安全就平等"，避免障碍还很远就选大转避让；逼近障碍才被惩罚。
-    # 10.24 极窄通道修复：0.20→0.10，避免在5cm侧距时所有前进候选被满罚导致选零速。
-    obstacle_cost_free_margin: 0.10 # 障碍代价软边距，单位m
+    obstacle_cost_free_margin: 0.20 # 障碍代价软边距，单位m
     # 只在直行且两侧净距均>60cm时，前方软避障评分从40→30cm平滑打开；
     # 侧边靠墙时不缩放原评分。硬停止/碰撞否决/速度代价不改；手动转向不介入。
     front_turn_bias_start_m: 0.40 # 前方软评分开始恢复，单位m
@@ -232,7 +231,7 @@ dwa_local_planner:
     speed_cost_gain: 0.40 # 速度代价权重
     path_cost_gain: 0.40 # 路径代价权重
     # 当前控制链没有全局路径；速度和路径代价保持上游可选项的关闭状态。
-    use_speed_cost: false # 是否启用速度代价（10.23回退：导致停车次数暴增）
+    use_speed_cost: false # 是否启用速度代价
     use_path_cost: false # 是否启用全局路径代价
     # 10.10 方案A+C（003347 定案：窄缝塌缩段 74% 评分自选 raw_v=sel_v=0 双零、
     # 强打杆 31% 输出近零、6% 输出与意图反向——A5 证明旁路 target 恒 0.70 无
@@ -286,7 +285,7 @@ dwa_local_planner:
     dwa_geometric_heading_tie_deg: 2.0 # 几何候选角度判定为并列的阈值，单位deg
 
     # 左右雷达数据超时。超过该时间认为该侧雷达掉线。
-    scan_timeout_sec: 1.20 # 雷达数据超时时间，单位s（10.22放宽：解决双侧雷达同步导致融合失败）
+    scan_timeout_sec: 0.60 # 雷达数据超时时间，单位s
     # 控制器输入超时。超过该时间 DWA 不再沿旧控制意图继续输出。
     cmd_timeout_sec: 0.50 # 控制器输入超时时间，单位s
     # odom 超时。超过该时间改用控制器意图近似当前速度。
@@ -406,18 +405,10 @@ dwa_local_planner:
     manual_turn_forward_min_angle_deg: 65.0 # 手动转向判定的最小前向角，单位deg
     manual_turn_forward_max_angle_deg: 115.0 # 手动转向判定的最大前向角，单位deg
     # Side hard stop uses only fused real radar points, not DWA scoring.
-    side_hard_stop_circle_enabled: true # 是否启用侧边硬停止保护（圆形或梯形）
+    side_hard_stop_circle_enabled: true # 是否启用侧边硬停止圆形保护
     side_hard_stop_sweep_enabled: false # Predictive side sweep off; direct side-circle stop stays on
-    # 10.23 前后分段梯形保护 + 通道模式（解决倒车100%停车问题）
-    side_hard_stop_trapezoid_enabled: true # 启用梯形保护（替代圆形）
-    side_hard_stop_trap_front_x: 0.50 # 前段边界x坐标，单位m
-    side_hard_stop_trap_rear_x: -0.14 # 后段边界x坐标，单位m
-    side_hard_stop_trap_front_half_width: 0.36 # 前段保护半宽，单位m
-    side_hard_stop_trap_rear_half_width_corridor: 0.36 # 后段保护半宽-通道模式，单位m
-    side_hard_stop_trap_rear_half_width_open: 0.50 # 后段保护半宽-开阔模式，单位m
-    side_hard_stop_corridor_detection_threshold: 0.60 # 通道检测阈值，单位m
     # 圆心前移以覆盖车体前半部、脚踏板和脚尖安全区，保留车尾后部的非保护区域。
-    side_hard_stop_circle_center_x: 0.30 # 侧边硬停止保护圆心x坐标，单位m（trapezoid_enabled=false时使用）
+    side_hard_stop_circle_center_x: 0.30 # 侧边硬停止保护圆心x坐标，单位m
     side_hard_stop_circle_center_y: 0.0 # 侧边硬停止保护圆心y坐标，单位m
     side_hard_stop_circle_radius: 0.50 # 侧边硬停止保护圆半径，单位m
     side_hard_stop_reverse_escape_yawrate: 0.08 # 倒车侧边硬停时叠加的反向脱困角速度，单位rad/s
@@ -475,10 +466,10 @@ dwa_local_planner:
     speed_restore_stable_sec: 1.0 # 全部安全条件连续满足此时间后才恢复高速，单位s
     speed_restore_max_yawrate: 0.12 # 恢复高速要求车体/行驶方向稳定，允许角速度，单位rad/s
     # 保留给RViz距离线的基础显示宽度，按实测车体宽度设置。
-    front_corridor_width: 0.57 # 前方通道参考显示宽度，单位m
+    front_corridor_width: 0.59 # 前方通道参考显示宽度，单位m
     # 前方 DWA 触发区从左右雷达中心线开始，几何选簇使用同一套外扩梯形。
     front_trigger_start_x: 0.50 # 前方DWA触发区域起始x坐标，单位m
-    front_trigger_base_width: 0.57 # 前方DWA触发区域基础宽度，单位m
+    front_trigger_base_width: 0.59 # 前方DWA触发区域基础宽度，单位m
     front_trigger_expand_angle_deg: 5.0 # 前方触发区域随距离扩展的角度，单位deg
     # 控制器X/Y中心为100，89～111范围内视为死区。
     controller_x_dead_low: 89 # 控制器X轴死区下限
@@ -537,12 +528,6 @@ dwa_local_planner:
     dwa_corridor_track_heading_tolerance_deg: 25.0 # 通道中心线跟踪航向容差，单位deg
     dwa_corridor_path_filter_alpha: 0.35 # 通道参考线滤波系数
     dwa_corridor_trajectory_lookahead: 1.20 # 通道参考线的轨迹前视距离，单位m
-    # S弯修复(10.22)：通道引导激活时把本周期轨迹预测时域从 2.0s 收缩到该值
-    # （对齐 ltw_dwa DWA_COR_PREDICT_TIME=1.2，09-25 S 弯三件套之一）。
-    # 根因：2.0s 恒(v,w)弧在 ~90cm 弯通道末端横向偏移 ~35cm，弯道所需弧率
-    # 以上的候选全部被预测碰撞整段判死→S 弯中段转弯候选枯竭→(0,0) 摇摇车。
-    # 仅作用于评分副本；前向净距探针/安全层仍看全视界。<=0 禁用收缩。
-    dwa_corridor_predict_time: 1.20 # 通道激活时的轨迹预测时域，单位s
     # 通道中心线只作为原始DWA的连续软评分，不直接接管速度或过滤轨迹。
     dwa_corridor_lateral_weight: 2.00 # 通道横向偏差软评分权重
     dwa_corridor_heading_weight: 0.70 # 通道航向偏差软评分权重

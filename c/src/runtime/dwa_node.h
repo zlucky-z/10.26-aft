@@ -76,12 +76,13 @@ typedef void (*dwa_node_cmd_sink_fn)(
 typedef struct {
   dwa_point_t point;
   bool is_left;
-  /* Compatibility metadata retained for the base-cloud wire format. The
-   * production path now sends one canonical filtered cloud; no synthetic
-   * side-rescue or front-only point stream is appended. */
+  /* 9.28 Fix D：跨车身侧墙救援点标记——进 DWA 障碍表（规划器能看见
+   * 侧墙，碰撞判废对称生效）+ 侧净距（side_wall_hold），但不进
+   * side_safety_points/侧硬停圆/front_no_turn_stop/逃逸点云（避免
+   * 误触发既有安全通道；这些通道的角窗/圆判定对跨车身视角无意义）。 */
   uint8_t side_safety_only;
-  /* Compatibility metadata retained; production points use the canonical
-   * cloud and are consumed by the normal geometric views. */
+  /* Separate front-only sample preserved before the app self-footprint mask.
+   * It is consumed by hard-stop clearance only, never by planner obstacles. */
   uint8_t front_safety_only;
 } dwa_fused_base_point_t;
 
