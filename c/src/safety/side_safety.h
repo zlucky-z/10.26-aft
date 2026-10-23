@@ -23,6 +23,14 @@ typedef struct {
   float circle_center_x;
   float circle_center_y;
   float circle_radius;
+  /* 10.23 前后分段保护 + 通道模式 */
+  bool trapezoid_enabled;
+  float trap_front_x;
+  float trap_rear_x;
+  float trap_front_half_width;
+  float trap_rear_half_width_corridor;
+  float trap_rear_half_width_open;
+  float corridor_detection_threshold;
   float wheel_track_m;
   float sweep_prediction_sec;
   float sweep_brake_sec;
@@ -41,6 +49,14 @@ static inline dwa_side_safety_config_t dwa_side_safety_config_default(void)
   config.circle_center_x = 0.51f;
   config.circle_center_y = 0.0f;
   config.circle_radius = 0.44f;
+  /* 10.23 前后分段保护 + 通道模式默认值 */
+  config.trapezoid_enabled = false;
+  config.trap_front_x = 0.50f;
+  config.trap_rear_x = -0.14f;
+  config.trap_front_half_width = 0.36f;
+  config.trap_rear_half_width_corridor = 0.36f;
+  config.trap_rear_half_width_open = 0.50f;
+  config.corridor_detection_threshold = 0.60f;
   config.wheel_track_m = 0.50f;
   config.sweep_prediction_sec = 0.45f;
   config.sweep_brake_sec = 0.25f;

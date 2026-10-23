@@ -321,6 +321,15 @@ static dwa_side_safety_config_t side_safety_config(const dwa_node_t *node)
   value.circle_center_x = p->side_hard_stop_circle_center_x;
   value.circle_center_y = p->side_hard_stop_circle_center_y;
   value.circle_radius = p->side_hard_stop_circle_radius;
+  value.sweep_enabled = p->side_hard_stop_sweep_enabled;
+  /* 10.23 前后分段保护 + 通道模式 */
+  value.trapezoid_enabled = p->side_hard_stop_trapezoid_enabled;
+  value.trap_front_x = p->side_hard_stop_trap_front_x;
+  value.trap_rear_x = p->side_hard_stop_trap_rear_x;
+  value.trap_front_half_width = p->side_hard_stop_trap_front_half_width;
+  value.trap_rear_half_width_corridor = p->side_hard_stop_trap_rear_half_width_corridor;
+  value.trap_rear_half_width_open = p->side_hard_stop_trap_rear_half_width_open;
+  value.corridor_detection_threshold = p->side_hard_stop_corridor_detection_threshold;
   value.wheel_track_m = p->side_hard_stop_wheel_track_m;
   value.sweep_prediction_sec = p->side_hard_stop_sweep_prediction_sec;
   value.sweep_brake_sec = p->side_hard_stop_sweep_brake_sec;
@@ -741,13 +750,14 @@ bool dns_handle_manual_bypass(
   (void)nearest_radar_distance;
   planner_side_hard_stop_decision_t side_hard_stop;
   bool forward_hard_stop;
-  bool front_no_turn_hard_stop;
   bool forward_hard_stop_active;
   bool side_hard_stop_active;
   bool nearby_front_obstacle;
   bool nearby_side_obstacle;
   bool nearby_obstacle;
 
+  /* Keep this input for diagnostics only; it must not preempt DWA. */
+  (void)front_no_turn_stop;
   dwa_twist_reset(&output);
   /* 中立意味着本次硬停止事件结束，清除两周期方向保持状态。 */
   if (dwa_manual_command_is_neutral(raw_intent, p->deadband_linear,
@@ -795,22 +805,17 @@ bool dns_handle_manual_bypass(
     const bool front_radar_contact =
       isfinite(front_nearest_radar_distance) &&
       front_nearest_radar_distance <= p->radar_contact_distance;
-    const bool front_envelope_intrusion = isfinite(front_clearance) &&
-      front_clearance <= 0.0f;
     forward_hard_stop = raw_intent->v > p->deadband_linear &&
       (hard_stop_latched || (perception_fresh &&
-      (front_radar_contact || front_envelope_intrusion)));
-    front_no_turn_hard_stop = perception_fresh &&
-      front_no_turn_stop->point_count > 0 &&
-      raw_intent->v >= -p->deadband_linear;
+      front_radar_contact));
     side_hard_stop = dwa_evaluate_side_hard_stop_circle(
       raw_intent, perception_fresh, side_hard_stop_circle, &sconfig);
-    forward_hard_stop_active = forward_hard_stop || front_no_turn_hard_stop;
+    forward_hard_stop_active = forward_hard_stop;
     side_hard_stop_active = side_hard_stop.stop;
     nearby_front_obstacle = perception_fresh &&
       ((isfinite(front_clearance) &&
       front_clearance <= dc->moving_dwa_trigger_distance) ||
-      front_no_turn_stop->point_count > 0 || forward_hard_stop_active);
+      forward_hard_stop_active);
     nearby_side_obstacle = perception_fresh &&
       ((isfinite(side_clearance->left) &&
       side_clearance->left <= dc->side_limit_distance) ||

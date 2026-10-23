@@ -85,11 +85,6 @@
 #define RM_SCAN_MAX 16384    /* 单侧扫描点上限（同 SDK 适配层截断值） */
 #define RM_FUSED_MAX 65536   /* 融合点上限（双侧 × 截断值） */
 
-/* 前方探测区（基线 predictive_FNC.c 同款几何，单位换算为本工程米制）：
- * 车头 x=0.50m、半宽 0.295m、两角向外张 5° 的梯形。 */
-#define RM_CAR_FRONT_M 0.50
-#define RM_CAR_HALF_WID_M 0.295
-#define RM_FRONT_DETECT_ANGLE_DEG 5.0
 /* 轮距（生产 WHEEL_TRACK_M=0.50，仅用于打印 wfb 轮差估计）。 */
 #define RM_WHEEL_TRACK_M 0.50
 
@@ -123,16 +118,9 @@ static dwa_fusion_mount_t g_mounts[2];
 static pthread_mutex_t g_cloud_mu;
 static dwa_fusion_point_t g_fused[RM_FUSED_MAX];
 static size_t g_fused_count;
-static dwa_fused_base_point_t g_base_points[RM_FUSED_MAX * 2 + 64];
-static dwa_fused_base_point_t g_front_safety_candidates[RM_FUSED_MAX];
-static size_t g_front_safety_candidate_count;
-/* 9.28 Fix D：跨车身侧墙救援缓冲——真实侧墙点归还给规划器
- * （进 DWA 障碍表+侧净距），不进逃逸点云/正前方距离。
- * Fix H 起救援通道退役（跨车身点全部直通主云），恒为空。 */
-static dwa_fusion_point_t g_side_flank[64];
-static size_t g_side_flank_count;
+/* 唯一权威点云：融合、坐标统一、无效/自车点过滤后的 base_link 点。 */
+static dwa_fused_base_point_t g_base_points[RM_FUSED_MAX];
 static uint8_t g_escape_data[RM_FUSED_MAX * 16];
-static double g_fwd_gap = 1e9; /* 正前方距离 m（基线语义：无障 1e9） */
 
 /* ---- A4(10.09)：IMU 角速度闭环补偿状态（ltw 基线方案移植） ---- */
 static yaw_feedback_params_t g_yf_params;   /* 补偿参数（ltw 实车标定值） */
@@ -252,6 +240,8 @@ static int rm_pop_event(rm_event_t *ev)
 static bool rm_point_inside_self_footprint(float x, float y)
 {
   const dwa_footprint_t *f = &g_node.config.footprint;
+  /* 统一点云入口恢复原有自车过滤语义：物理车体加配置余量一起
+   * 删除车架、支架和车体边缘自反射；所有模块随后共享同一结果。 */
   const float padding =
     g_node.params_snapshot.footprint_self_filter_padding > 0.0f ?
     g_node.params_snapshot.footprint_self_filter_padding : 0.0f;
@@ -281,24 +271,6 @@ static bool rm_point_inside_self_footprint(float x, float y)
       x <= trapezoid_end_x + padding &&
       fabsf(y) <= half_width + padding;
   }
-}
-
-static double rm_front_gap(const dwa_fusion_point_t *points, size_t count)
-{
-  const float tan_half =
-    (float)tan(RM_FRONT_DETECT_ANGLE_DEG * M_PI / 180.0);
-  float best = 1e9f;
-  size_t i;
-  for (i = 0; i < count; ++i) {
-    const float x = points[i].x;
-    const float y = points[i].y;
-    float dx;
-    if (x <= RM_CAR_FRONT_M) continue;
-    dx = x - RM_CAR_FRONT_M;
-    if (fabsf(y) >= RM_CAR_HALF_WID_M + dx * tan_half) continue;
-    if (dx < best) best = dx;
-  }
-  return (double)best;
 }
 
 /* ============================ 融合（ROS 融合节点语义） ============================ */
@@ -387,6 +359,20 @@ static void rm_fuse(void)
     pthread_mutex_unlock(&g_side[s].mu);
   }
   if (!both) {
+    /* 10.22 融合失败诊断：记录哪侧雷达数据过期导致融合失败 */
+    static double last_warn_time = 0.0;
+    if (now - last_warn_time > 1.0) {  /* 限流：1秒最多打印1次 */
+      for (s = 0; s < 2; ++s) {
+        pthread_mutex_lock(&g_side[s].mu);
+        const double age = g_side[s].updated_time > 0.0 ?
+          now - g_side[s].updated_time : -1.0;
+        hal_log(HAL_LOG_WARN,
+          "[融合失败] side=%d(%s) fresh=%d age=%.3fs timeout=%.2fs",
+          s, s == 0 ? "LEFT" : "RIGHT", g_side[s].fresh, age, timeout);
+        pthread_mutex_unlock(&g_side[s].mu);
+      }
+      last_warn_time = now;
+    }
     pthread_mutex_unlock(&g_cloud_mu);
     return;
   }
@@ -402,47 +388,15 @@ static void rm_fuse(void)
   /* 在自车足迹过滤前发送，显示滤波后融合输出及可能被自车过滤掉的点。 */
   rm_send_pointcloud_debug(g_fused, g_fused_count);
 
-  /* 独立保存脚尖前向硬停候选：必须在通用自车足迹过滤之前提取。
-   * 候选只进入安全净距统计，不进入 DWA 点云/栅格/走廊，因而不扩张
-   * 弯道侧墙的前向停车包络。保留 toe 前 1 个 self-filter padding
-   * 范围内的窄前向安全带点，之后由安全链使用 toe collision edge 计算。
-   */
-  g_front_safety_candidate_count = 0;
+  /* 唯一一次自车过滤。脚尖/近雷达点不再另建 front_safety_candidates；
+   * 它们保留在同一份 canonical cloud 中，由各模块按几何区域读取。 */
   {
-    const dwa_front_safety_config_t front_zone = {
-      g_node.params_snapshot.front_trigger_start_x,
-      g_node.params_snapshot.front_trigger_base_width,
-      g_node.params_snapshot.front_trigger_expand_angle_deg
-    };
     size_t r, w = 0;
     for (r = 0; r < g_fused_count; ++r) {
-      const float x = g_fused[r].x;
-      const float y = g_fused[r].y;
-      const float world_angle_deg = atan2f(y, x) * (float)(180.0 / M_PI);
-      const dwa_point_t point = {x, y};
-      /* 不再屏蔽雷达原点附近的 10 cm 区域，避免真实近障碍物被误删；
-       * 保留既有后向扇区排除。 */
-      if (world_angle_deg > 170.0f || world_angle_deg < -170.0f)
-      {
-        continue;
-      }
-      if (dwa_point_is_front_safety_candidate(
-          &point, &front_zone, &g_node.config.footprint,
-          g_node.params_snapshot.footprint_self_filter_padding) &&
-        g_front_safety_candidate_count < RM_FUSED_MAX)
-      {
-        dwa_fused_base_point_t *candidate =
-          &g_front_safety_candidates[g_front_safety_candidate_count++];
-        candidate->point = point;
-        candidate->is_left = (g_fused[r].source == 0);
-        candidate->side_safety_only = 0;
-        candidate->front_safety_only = 1;
-      }
-      if (rm_point_inside_self_footprint(x, y)) continue;
+      if (rm_point_inside_self_footprint(g_fused[r].x, g_fused[r].y)) continue;
       g_fused[w++] = g_fused[r];
     }
     g_fused_count = w;
-    g_side_flank_count = 0;
   }
 
   /* 同一遍生成：DWA 注入点 + 桥逃逸点云字节（生产 PointCloud2 布局：
@@ -455,6 +409,8 @@ static void rm_fuse(void)
       g_base_points[i].point.x = g_fused[i].x;
       g_base_points[i].point.y = g_fused[i].y;
       g_base_points[i].is_left = (g_fused[i].source == 0);
+      /* Flags are retained for wire compatibility; canonical cloud has one
+       * point class, so every point is consumed by the same module views. */
       g_base_points[i].side_safety_only = 0;
       g_base_points[i].front_safety_only = 0;
       memcpy(g_escape_data + i * 16 + 0, &g_fused[i].x, 4);
@@ -462,29 +418,14 @@ static void rm_fuse(void)
       memcpy(g_escape_data + i * 16 + 8, &zero, 4);
       g_escape_data[i * 16 + 12] = g_fused[i].source;
     }
-    for (i = 0; i < g_side_flank_count &&
-         g_fused_count + i < RM_FUSED_MAX; ++i) {
-      const size_t idx = g_fused_count + i;
-      g_base_points[idx].point.x = g_side_flank[i].x;
-      g_base_points[idx].point.y = g_side_flank[i].y;
-      g_base_points[idx].is_left = (g_side_flank[i].source == 0);
-      g_base_points[idx].side_safety_only = 1;
-      g_base_points[idx].front_safety_only = 0;
-    }
-    for (i = 0; i < g_front_safety_candidate_count; ++i) {
-      const size_t idx = g_fused_count + g_side_flank_count + i;
-      g_base_points[idx] = g_front_safety_candidates[i];
-    }
   }
-  g_fwd_gap = rm_front_gap(g_fused, g_fused_count);
-
   if (g_debug_cloud) {
     static unsigned fuse_seq = 0;
     if ((fuse_seq++ % 20) == 0) {
       size_t k;
       int shown = 0;
-      printf("[fuse] seq=%u count=%zu fwd=%.4f\n",
-        fuse_seq, g_fused_count, g_fwd_gap);
+      printf("[fuse] seq=%u count=%zu\n",
+        fuse_seq, g_fused_count);
       for (k = 0; k < g_fused_count && shown < 10; ++k) {
         if (g_fused[k].x > 0.35f && g_fused[k].x < 0.80f &&
             fabsf(g_fused[k].y) < 0.40f) {
@@ -499,9 +440,8 @@ static void rm_fuse(void)
 
   pthread_mutex_unlock(&g_cloud_mu);
 
-  /* 注入 DWA（内部有锁，线程安全）。尾部为 Fix D 跨车身侧墙救援点。 */
-  dwa_node_on_fused_cloud(&g_node, g_base_points,
-    g_fused_count + g_side_flank_count + g_front_safety_candidate_count);
+  /* 所有模块只接收这一份 canonical cloud（内部有锁，线程安全）。 */
+  dwa_node_on_fused_cloud(&g_node, g_base_points, g_fused_count);
 
   /* 通知桥：融合点云到达（= 生产 /dwa/fused_scan_base 订阅回调）。 */
   {
@@ -977,7 +917,7 @@ static int rm_build_bridge_argv(const char *motor_port, int dry_run,
     "--wheel-track-m", "0.50",
     "--wheel-yaw-max-dt", "0.15",
     "--escape-stop-hold-sec", "0.0",
-    "--escape-half-width", "0.295",
+    "--escape-half-width", "0.285",
     "--escape-max-duration-sec", "2.0",
     "--no-controller-require-neutral",
     /* 9.27 去掉干预路径角速度 slew：默认 0.9 rad/s²（每 0.1s 周期 w 最多
@@ -1278,10 +1218,12 @@ int main(int argc, char **argv)
       const float wfb =
         (fb.right_mps - fb.left_mps) / RM_WHEEL_TRACK_M;
 
-      printf(" 正前方距离 = %f\n", g_fwd_gap);
-      printf("[路径规划] v=%f w=%f (θ_joy=%f rad  fwd=%f m  fbL=%f fbR=%f"
+      printf(" DWA前净距 = %f\n",
+        (double)g_node.front_unclipped_clearance_this_tick);
+      printf("[路径规划] v=%f w=%f (θ_joy=%f rad  dwa_front_clearance=%f m  fbL=%f fbR=%f"
         "  gyroz=%f wfb=%f src=%c)\n",
-        (double)v_cm, (double)w_out, (double)theta_joy_rad, g_fwd_gap,
+        (double)v_cm, (double)w_out, (double)theta_joy_rad,
+        (double)g_node.front_unclipped_clearance_this_tick,
         (double)fbL, (double)fbR, (double)g_gz_filt, (double)wfb, 'W');
       printf("[通道] active=%d geo=%d pref=%d det=%d held=%d"
         " reason=%s stab=%d lost=%d clu=%d raw=%d blk=%d"

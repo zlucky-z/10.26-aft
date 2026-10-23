@@ -65,7 +65,7 @@ int main(int argc, char **argv)
   expect_double("right_laser_yaw", params.right_laser_yaw, 1.5707963267948966);
   expect_double("footprint_front", params.footprint_front, 0.50);
   expect_double("footprint_back", params.footprint_back, 0.14);
-  expect_double("footprint_half_width", params.footprint_half_width, 0.295);
+  expect_double("footprint_half_width", params.footprint_half_width, 0.285);
   expect_double("footrest_start_x", params.footrest_start_x, 0.57);
   expect_double("footrest_front_x", params.footrest_front_x, 0.75);
   expect_double("footrest_half_width", params.footrest_half_width, 0.23);
@@ -163,8 +163,8 @@ int main(int argc, char **argv)
   expect_double("front_hard_stop_escape_yawrate", params.front_hard_stop_escape_yawrate, 0.50);
   expect_double("stop_escape_trigger_sec", params.stop_escape_trigger_sec, 0.00);
   expect_double("side_wall_hold_min_yawrate", params.side_wall_hold_min_yawrate, 0.04);
-  expect_double("front_corridor_width", params.front_corridor_width, 0.59);
-  expect_double("front_trigger_base_width", params.front_trigger_base_width, 0.59);
+  expect_double("front_corridor_width", params.front_corridor_width, 0.57);
+  expect_double("front_trigger_base_width", params.front_trigger_base_width, 0.57);
   expect_double("front_trigger_start_x", params.front_trigger_start_x, 0.50);
   expect_double("front_trigger_expand_angle_deg", params.front_trigger_expand_angle_deg, 5.0);
   expect_int("controller_x_dead_low", params.controller_x_dead_low, 89);
@@ -200,12 +200,12 @@ int main(int argc, char **argv)
   expect_double("default max_velocity", defaults.max_velocity, 1.00);
   expect_double("default trajectory_reference_x", defaults.trajectory_reference_x, 0.297);
   expect_double("default footprint_front", defaults.footprint_front, 0.34);
-  expect_double("default footprint_half_width", defaults.footprint_half_width, 0.295);
+  expect_double("default footprint_half_width", defaults.footprint_half_width, 0.285);
   expect_double("default toe_collision_margin_m", defaults.toe_collision_margin_m, 0.00);
   expect_double("default intent_freeze_min_yawrate", defaults.intent_freeze_min_yawrate, 0.00);
   expect_int("default grid_unknown_is_obstacle", defaults.grid_unknown_is_obstacle, 1);
   expect_double("default front_trigger_start_x", defaults.front_trigger_start_x, 0.48);
-  expect_double("default front_corridor_width", defaults.front_corridor_width, 0.59);
+  expect_double("default front_corridor_width", defaults.front_corridor_width, 0.57);
   expect_double("default stop_escape_trigger_sec", defaults.stop_escape_trigger_sec, 1.0);
   expect_double("default front_hard_stop_escape_yawrate", defaults.front_hard_stop_escape_yawrate, 0.30);
   expect_int("yaml near_obstacle_yawrate_limit_enabled", params.near_obstacle_yawrate_limit_enabled, 0);

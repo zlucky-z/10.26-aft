@@ -49,12 +49,12 @@ int main(void)
   mb_config_defaults(&config);
   failures += expect(config.escape_stop_hold_sec == 0.0,
     "escape must start without the former 0.5-second delay");
-  failures += expect(fabs(config.escape_half_width - 0.295) < 1e-9,
-    "escape side clearance must use the 59 cm chassis width");
+  failures += expect(fabs(config.escape_half_width - 0.285) < 1e-9,
+    "escape side clearance must use the 57 cm chassis width");
   failures += expect(fabs(config.escape_max_duration_sec - 2.0) < 1e-9,
     "escape maximum duration must default to two seconds");
 
-  se_stop_escape_compensator_init(&escape, 0.0, 0.03, 0.5, 0.6, 0.295);
+  se_stop_escape_compensator_init(&escape, 0.0, 0.03, 0.5, 0.6, 0.285);
   cloud[0].x = 0.5; cloud[0].y = 0.68;  /* left clearance 0.41 */
   cloud[1].x = 0.5; cloud[1].y = -0.48; /* right clearance 0.21 */
   cloud[2].x = 0.55; cloud[2].y = 0.10; /* frontal bearing favors right */
@@ -65,7 +65,7 @@ int main(void)
     "clearly wider side must override frontal-bearing preference");
 
   /* Equal measured side clearances use the nearer frontal half as a bias. */
-  se_stop_escape_compensator_init(&escape, 0.0, 0.03, 0.5, 0.6, 0.295);
+  se_stop_escape_compensator_init(&escape, 0.0, 0.03, 0.5, 0.6, 0.285);
   cloud[0].x = 0.5; cloud[0].y = 0.47;
   cloud[1].x = 0.5; cloud[1].y = -0.47;
   cloud[2].x = 0.55; cloud[2].y = 0.10;
@@ -163,7 +163,7 @@ int main(void)
 
   /* Staleness after activation pauses output without ending the maneuver;
    * fresh sensing resumes the same direction without another start delay. */
-  se_stop_escape_compensator_init(&escape, 0.0, 0.03, 0.5, 0.6, 0.295);
+  se_stop_escape_compensator_init(&escape, 0.0, 0.03, 0.5, 0.6, 0.285);
   cloud[0].x = 0.60; cloud[0].y = 0.70;
   se_stop_escape_compensator_update_cloud(&escape, cloud, 1, 11.5);
   decision = se_stop_escape_compensator_update(&escape,
@@ -204,7 +204,7 @@ int main(void)
 
   /* Frontal wall returns just outside the footprint width must not be
    * mistaken for blocked left/right escape sectors. */
-  se_stop_escape_compensator_init(&escape, 0.0, 0.03, 0.5, 0.6, 0.295);
+  se_stop_escape_compensator_init(&escape, 0.0, 0.03, 0.5, 0.6, 0.285);
   cloud[0].x = 0.90; cloud[0].y = 0.28;
   cloud[1].x = 0.90; cloud[1].y = -0.29;
   cloud[2].x = 0.80; cloud[2].y = 0.0;
@@ -219,7 +219,7 @@ int main(void)
     "unobserved lateral sectors must not be assumed clear for escape");
 
   /* A point actually beside the chassis remains a side hazard. */
-  se_stop_escape_compensator_init(&escape, 0.0, 0.03, 0.5, 0.6, 0.295);
+  se_stop_escape_compensator_init(&escape, 0.0, 0.03, 0.5, 0.6, 0.285);
   cloud[0].x = 0.10; cloud[0].y = 0.32;
   cloud[1].x = 0.10; cloud[1].y = -0.32;
   se_stop_escape_compensator_update_cloud(&escape, cloud, 2, 11.6);
@@ -231,7 +231,7 @@ int main(void)
 
   /* DWA handoff requires a sustained command, then sustained measured forward
    * wheel motion. A failed trial resumes the same latched direction. */
-  se_stop_escape_compensator_init(&escape, 0.0, 0.03, 0.9, 0.6, 0.295);
+  se_stop_escape_compensator_init(&escape, 0.0, 0.03, 0.9, 0.6, 0.285);
   escape.max_duration_sec = 10.0; /* This block exercises handoff, not timeout. */
   cloud[0].x = 0.60; cloud[0].y = 0.70;
   se_stop_escape_compensator_update_cloud(&escape, cloud, 1, 12.0);
@@ -315,7 +315,7 @@ int main(void)
 
   /* The configured hard limit stops one escape and locks it out until the
    * initiating forward intent or stop trigger clears. */
-  se_stop_escape_compensator_init(&escape, 0.0, 0.03, 0.5, 0.6, 0.295);
+  se_stop_escape_compensator_init(&escape, 0.0, 0.03, 0.5, 0.6, 0.285);
   cloud[0].x = 0.60; cloud[0].y = 0.70;
   se_stop_escape_compensator_update_cloud(&escape, cloud, 1, 20.0);
   decision = se_stop_escape_compensator_update(&escape,

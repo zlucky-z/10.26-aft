@@ -35,7 +35,7 @@ void dwa_planner_params_defaults(dwa_planner_params_t *p)
   p->right_laser_angle_offset_deg = 0.0f;
 
   /* 车体包络：DwaFootprint 成员默认 + constructor 无覆盖 */
-  p->footprint_front = 0.34f; p->footprint_back = 0.32f; p->footprint_half_width = 0.295f;
+  p->footprint_front = 0.34f; p->footprint_back = 0.32f; p->footprint_half_width = 0.285f;
   p->footrest_start_x = 0.0f; p->footrest_front_x = 0.0f; p->footrest_half_width = 0.0f;
   p->toe_safety_front_x = 0.0f; p->toe_safety_half_width = 0.0f;
   p->footprint_padding = 0.0f;
@@ -245,6 +245,14 @@ void dwa_planner_params_defaults(dwa_planner_params_t *p)
   p->side_hard_stop_circle_center_x = 0.51f;
   p->side_hard_stop_circle_center_y = 0.0f;
   p->side_hard_stop_circle_radius = 0.44f;
+  /* 10.23 前后分段保护 + 通道模式默认值 */
+  p->side_hard_stop_trapezoid_enabled = false;
+  p->side_hard_stop_trap_front_x = 0.50f;
+  p->side_hard_stop_trap_rear_x = -0.14f;
+  p->side_hard_stop_trap_front_half_width = 0.36f;
+  p->side_hard_stop_trap_rear_half_width_corridor = 0.36f;
+  p->side_hard_stop_trap_rear_half_width_open = 0.50f;
+  p->side_hard_stop_corridor_detection_threshold = 0.60f;
   p->side_hard_stop_reverse_escape_yawrate = 0.30f;
   p->side_hard_stop_wheel_track_m = 0.50f;
   p->side_hard_stop_sweep_prediction_sec = 0.45f;
@@ -298,9 +306,9 @@ void dwa_planner_params_defaults(dwa_planner_params_t *p)
   p->speed_restore_max_yawrate = 0.12f;
 
   /* 前方触发区：constructor 的计算型默认（依赖雷达安装与半宽）。 */
-  p->front_corridor_width = 2.0f * p->footprint_half_width;             /* 0.59 */
+  p->front_corridor_width = 2.0f * p->footprint_half_width;             /* 0.57 */
   p->front_trigger_start_x = 0.5f * (p->left_laser_x + p->right_laser_x); /* 0.48 */
-  p->front_trigger_base_width = 2.0f * p->footprint_half_width;         /* 0.59 */
+  p->front_trigger_base_width = 2.0f * p->footprint_half_width;         /* 0.57 */
   p->front_trigger_expand_angle_deg = 5.0f;
 
   p->controller_x_dead_low = 89;  p->controller_x_dead_high = 111;
@@ -342,6 +350,7 @@ void dwa_planner_params_defaults(dwa_planner_params_t *p)
   p->dwa_corridor_track_heading_tolerance = 25.0f * DWA_PI / 180.0f;
   p->dwa_corridor_path_filter_alpha = 0.35f;
   p->dwa_corridor_trajectory_lookahead = 1.20f;
+  p->dwa_corridor_predict_time = 1.20f; /* 通道激活时收缩预测时域（ltw DWA_COR_PREDICT_TIME） */
   p->dwa_corridor_lateral_weight = 2.00f;
   p->dwa_corridor_heading_weight = 0.70f;
   p->dwa_corridor_progress_weight = 0.35f;
@@ -615,6 +624,14 @@ int dwa_planner_params_load(const char *yaml_path, dwa_planner_params_t *p)
   p->side_hard_stop_circle_center_x = dwa_yaml_get_double(d, "side_hard_stop_circle_center_x", p->side_hard_stop_circle_center_x);
   p->side_hard_stop_circle_center_y = dwa_yaml_get_double(d, "side_hard_stop_circle_center_y", p->side_hard_stop_circle_center_y);
   p->side_hard_stop_circle_radius = dwa_yaml_get_double(d, "side_hard_stop_circle_radius", p->side_hard_stop_circle_radius);
+  /* 10.23 前后分段保护 + 通道模式 */
+  p->side_hard_stop_trapezoid_enabled = dwa_yaml_get_bool(d, "side_hard_stop_trapezoid_enabled", p->side_hard_stop_trapezoid_enabled);
+  p->side_hard_stop_trap_front_x = dwa_yaml_get_double(d, "side_hard_stop_trap_front_x", p->side_hard_stop_trap_front_x);
+  p->side_hard_stop_trap_rear_x = dwa_yaml_get_double(d, "side_hard_stop_trap_rear_x", p->side_hard_stop_trap_rear_x);
+  p->side_hard_stop_trap_front_half_width = dwa_yaml_get_double(d, "side_hard_stop_trap_front_half_width", p->side_hard_stop_trap_front_half_width);
+  p->side_hard_stop_trap_rear_half_width_corridor = dwa_yaml_get_double(d, "side_hard_stop_trap_rear_half_width_corridor", p->side_hard_stop_trap_rear_half_width_corridor);
+  p->side_hard_stop_trap_rear_half_width_open = dwa_yaml_get_double(d, "side_hard_stop_trap_rear_half_width_open", p->side_hard_stop_trap_rear_half_width_open);
+  p->side_hard_stop_corridor_detection_threshold = dwa_yaml_get_double(d, "side_hard_stop_corridor_detection_threshold", p->side_hard_stop_corridor_detection_threshold);
   p->side_hard_stop_reverse_escape_yawrate = dwa_yaml_get_double(d, "side_hard_stop_reverse_escape_yawrate", p->side_hard_stop_reverse_escape_yawrate);
   p->side_hard_stop_wheel_track_m = dwa_yaml_get_double(d, "side_hard_stop_wheel_track_m", p->side_hard_stop_wheel_track_m);
   p->side_hard_stop_sweep_prediction_sec = dwa_yaml_get_double(d, "side_hard_stop_sweep_prediction_sec", p->side_hard_stop_sweep_prediction_sec);
@@ -717,6 +734,7 @@ int dwa_planner_params_load(const char *yaml_path, dwa_planner_params_t *p)
   p->dwa_corridor_track_heading_tolerance = dwa_yaml_get_double(d, "dwa_corridor_track_heading_tolerance_deg", p->dwa_corridor_track_heading_tolerance * 180.0f / DWA_PI) * DWA_PI / 180.0f;
   p->dwa_corridor_path_filter_alpha = dwa_yaml_get_double(d, "dwa_corridor_path_filter_alpha", p->dwa_corridor_path_filter_alpha);
   p->dwa_corridor_trajectory_lookahead = dwa_yaml_get_double(d, "dwa_corridor_trajectory_lookahead", p->dwa_corridor_trajectory_lookahead);
+  p->dwa_corridor_predict_time = dwa_yaml_get_double(d, "dwa_corridor_predict_time", p->dwa_corridor_predict_time);
   p->dwa_corridor_lateral_weight = dwa_yaml_get_double(d, "dwa_corridor_lateral_weight", p->dwa_corridor_lateral_weight);
   p->dwa_corridor_heading_weight = dwa_yaml_get_double(d, "dwa_corridor_heading_weight", p->dwa_corridor_heading_weight);
   p->dwa_corridor_progress_weight = dwa_yaml_get_double(d, "dwa_corridor_progress_weight", p->dwa_corridor_progress_weight);

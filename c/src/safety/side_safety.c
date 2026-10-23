@@ -73,7 +73,11 @@ planner_side_hard_stop_decision_t dwa_evaluate_side_hard_stop_circle(
 {
   planner_side_hard_stop_decision_t decision =
     planner_side_hard_stop_decision_default();
-  if (!config->circle_enabled || !perception_fresh) return decision;
+  if (!config->circle_enabled || !perception_fresh || intent == NULL) {
+    return decision;
+  }
+  /* The side hard-stop circle protects reverse turns only. */
+  if (intent->v >= -config->deadband_linear) return decision;
 
   float angle_deg = 90.0f;
   const planner_manual_turn_direction_t direction =
@@ -82,7 +86,36 @@ planner_side_hard_stop_decision_t dwa_evaluate_side_hard_stop_circle(
 
   const bool check_left = direction == PLANNER_TURN_LEFT;
   const float radius = check_left ? diagnostics->left_radius : diagnostics->right_radius;
-  if (!isfinite(radius) || radius > config->circle_radius) return decision;
+
+  /* 10.23 前后分段保护 + 通道模式 */
+  float effective_radius = config->circle_radius;
+
+  if (config->trapezoid_enabled) {
+    /* 梯形保护：根据障碍物x位置和环境模式确定保护半宽 */
+    const dwa_point_t *check_point = check_left ?
+      &diagnostics->left_point : &diagnostics->right_point;
+
+    float half_width;
+    if (check_point->x >= 0.0f) {
+      /* 前段（车体前半）：固定半宽 */
+      half_width = config->trap_front_half_width;
+    } else {
+      /* 后段（车体后半）：根据通道检测切换 */
+      const bool in_corridor =
+        isfinite(diagnostics->left_radius) &&
+        isfinite(diagnostics->right_radius) &&
+        diagnostics->left_radius < config->corridor_detection_threshold &&
+        diagnostics->right_radius < config->corridor_detection_threshold;
+
+      half_width = in_corridor ?
+        config->trap_rear_half_width_corridor :
+        config->trap_rear_half_width_open;
+    }
+
+    effective_radius = half_width;
+  }
+
+  if (!isfinite(radius) || radius > effective_radius) return decision;
 
   decision.stop = true;
   decision.direction = direction;

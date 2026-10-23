@@ -78,7 +78,6 @@ static void dnp_update_rider_band_wall_gate(
 
   for (i = 0; i < base_point_count; ++i) {
     const dwa_point_t *pt = &base_points[i].point;
-    if (base_points[i].front_safety_only) continue;
     if (!isfinite(pt->x) || !isfinite(pt->y)) continue;
     if (pt->x < p->rider_self_filter_start_x ||
       pt->x > p->rider_self_filter_front_x ||
@@ -133,70 +132,12 @@ static void dnp_update_rider_band_wall_gate(
 
 /* ---------- node_perception_scan.inc 直译 ---------- */
 
-/* angle_in_window_deg(angle_deg, start_deg, end_deg) 直译。 */
-static bool angle_in_window_deg(float angle_deg, float start_deg, float end_deg)
-{
-  angle_deg = normalize_angle_deg(angle_deg);
-  start_deg = normalize_angle_deg(start_deg);
-  end_deg = normalize_angle_deg(end_deg);
-  if (start_deg <= end_deg) {
-    return angle_deg >= start_deg && angle_deg <= end_deg;
-  }
-  return angle_deg >= start_deg || angle_deg <= end_deg;
-}
-
 /* normalize_angle_deg(angle_deg) 直译。 */
 float normalize_angle_deg(float angle_deg)
 {
   while (angle_deg > 180.0f) angle_deg -= 360.0f;
   while (angle_deg < -180.0f) angle_deg += 360.0f;
   return angle_deg;
-}
-
-/* inside_local_foot_mask(is_left_scan, scan_angle_rad, sensor_range) 直译。 */
-static bool inside_local_foot_mask(
-  const dwa_node_t *node, bool is_left_scan, float scan_angle_rad,
-  float sensor_range)
-{
-  const dwa_planner_params_t *p = &node->params_snapshot;
-  float angle_deg;
-
-  if (!p->local_foot_mask_enabled || !isfinite(sensor_range) ||
-    sensor_range <= 0.0f || sensor_range > p->local_foot_mask_max_range)
-  {
-    return false;
-  }
-
-  angle_deg = normalize_angle_deg(scan_angle_rad * 180.0f / NODE_PI);
-  if (is_left_scan) {
-    return angle_in_window_deg(
-      angle_deg, p->left_local_foot_angle_min_deg, p->left_local_foot_angle_max_deg);
-  }
-  return angle_in_window_deg(
-    angle_deg, p->right_local_foot_angle_min_deg, p->right_local_foot_angle_max_deg);
-}
-
-/* inside_footprint_self_filter(x, y) 直译。 */
-static bool inside_footprint_self_filter(const dwa_node_t *node, float x, float y)
-{
-  const float padding =
-    node->params_snapshot.footprint_self_filter_padding > 0.0f ?
-    node->params_snapshot.footprint_self_filter_padding : 0.0f;
-  return dwa_point_inside_footprint_self_filter(
-    x, y, &node->config.footprint, padding);
-}
-
-/* 安全净距独立留出脚尖前缘检测带：通用自车过滤仍服务于规划点云，
- * 但不能让通用过滤的0.05m padding吞掉实际toe_front前的障碍点。
- * 因此安全统计仅沿用自车过滤到 toe_front-0.05m；toe-front 窄带中的
- * 传感器自反射仍需依赖后续实测/角度特征确认，不能再用空间 padding 一刀切。 */
-static bool inside_front_safety_self_filter(const dwa_node_t *node, float x, float y)
-{
-  const float safety_filter_front = node->config.footprint.toe_front - 0.05f;
-  if (node->config.footprint.toe_front > 0.0f && x >= safety_filter_front) {
-    return false;
-  }
-  return inside_footprint_self_filter(node, x, y);
 }
 
 /* ---------- node_perception_grid.inc 直译 ---------- */
@@ -275,31 +216,6 @@ static void update_side_clearance_by_physical_side(
   const float clearance = footprint_distance < 0.0f ? 0.0f : footprint_distance;
 
   if (!dnp_inside_physical_side_sector(node, point)) return;
-  if (point->y > 0.0f) {
-    if (clearance < diagnostics->left) {
-      diagnostics->left = clearance;
-      diagnostics->left_point = *point;
-    }
-    return;
-  }
-  if (point->y < 0.0f && clearance < diagnostics->right) {
-    diagnostics->right = clearance;
-    diagnostics->right_point = *point;
-  }
-}
-
-/* 9.28 Fix D：跨车身侧墙救援点的侧净距更新——左右归属按点自身 y 符号
- * （两雷达交叉安装，source 与车侧相反），不走 update_side_clearance 的
- * 雷达归属+侧向角窗（跨车身视角下必被角窗剔除=侧净距失明根因）。
- * 喂 side_wall_hold / 速度侧门控消费。 */
-static void update_side_clearance_by_point_side(
-  const dwa_node_t *node, const dwa_point_t *point,
-  planner_side_clearance_diagnostics_t *diagnostics)
-{
-  const float footprint_distance =
-    dwa_distance_to_expanded_footprint(point, &node->config.footprint);
-  const float clearance =
-    footprint_distance < 0.0f ? 0.0f : footprint_distance;
   if (point->y > 0.0f) {
     if (clearance < diagnostics->left) {
       diagnostics->left = clearance;
@@ -429,12 +345,7 @@ void dnp_project_base_cloud_to_grid(
   size_t i;
   *(size_t *)&node->front_safety_candidates_this_tick = 0;
   *(size_t *)&node->front_safety_hits_this_tick = 0;
-  /* 安装角是常量：三角函数外提到循环外（原逐点重算 500 点×2 次）。 */
   const bool grid_build = node->params_snapshot.occupancy_grid_build_enabled;
-  const float left_mount_cos = cosf(node->left_mount.yaw);
-  const float left_mount_sin = sinf(node->left_mount.yaw);
-  const float right_mount_cos = cosf(node->right_mount.yaw);
-  const float right_mount_sin = sinf(node->right_mount.yaw);
 
   /* V4d(10.08)：F1d 前向净距的未截断统计——trigger 楔形几何与车头
    * 前缘每 tick 只组装一次（与上方安装角外提同一优化模式；组装内容
@@ -457,41 +368,13 @@ void dnp_project_base_cloud_to_grid(
     const bool is_left_scan = base_points[i].is_left;
     const planner_laser_mount_t *mount =
       is_left_scan ? &node->left_mount : &node->right_mount;
-    const float mount_cos = is_left_scan ? left_mount_cos : right_mount_cos;
-    const float mount_sin = is_left_scan ? left_mount_sin : right_mount_sin;
     float range;
     bool real_hit;
-    bool body_self_reflection;
     int cell_x = 0;
     int cell_y = 0;
     dwa_geometric_scan_point_t geometric_point;
-    float dx;
-    float dy;
-    float local_x;
-    float local_y;
-    float sensor_angle;
 
     if (!isfinite(point->x) || !isfinite(point->y)) continue;
-
-    /* 脚尖前向独立安全候选来自融合后、通用自车过滤前的点云。
-     * 只更新脚尖窄安全带净距，禁止进入规划、侧墙/骑乘带统计；候选
-     * 已在 robot_main 按脚尖前缘附近的过滤释放带筛选，故不再套用
-     * 会删掉它的通用足迹/骑乘过滤。 */
-    if (base_points[i].front_safety_only) {
-      ++*(size_t *)&node->front_safety_candidates_this_tick;
-      if (dwa_point_inside_front_safety_lane(
-          point, &v4d_trigger_zone, &node->config.footprint))
-      {
-        const float clearance = point->x - v4d_collision_front_edge;
-        ++*(size_t *)&node->front_safety_hits_this_tick;
-        if (clearance <
-          *(float *)&node->front_unclipped_clearance_this_tick)
-        {
-          *(float *)&node->front_unclipped_clearance_this_tick = clearance;
-        }
-      }
-      continue;
-    }
 
     /* 前向净距改用未截断点云。下方 real_hit 的
      * obstacle_range(板端3.50) 截断把远点直接丢弃（不进障碍表），
@@ -504,18 +387,16 @@ void dnp_project_base_cloud_to_grid(
      * front_unclipped_clearance_this_tick 供速度控制和硬停止消费
      * （dwa_node_tick.c 的 dynamic_input.front_clearance 优先读它）。
      * 只取前向物理包络窄道：弯道侧墙留给侧向/走廊逻辑，不纳入正前净距。
-     * 排除跨车身侧救援点(side_safety_only)、已确认自点、骑乘带点（F3 宽簇墙闸语义随 dnp_point_inside_rider_
-     * self_filter 自动生效）全部排除；local_foot_mask 板端关闭且仅挡
+     * 已确认自点、骑乘带点（F3 宽簇墙闸语义随 dnp_point_inside_rider_
+     * self_filter 自动生效）全部排除；local_foot_mask 已取消逐模块过滤，
      * 0.4m 内近点、planning 裁剪(|y|≤2.5m)远大于楔形区半宽，对本
-     * 统计均无差别。不进障碍表/栅格/几何扫描/评分——DWA 行为与
-     * CPU 预算不变。 */
-    if (!base_points[i].side_safety_only &&
-      dwa_point_inside_front_safety_lane(
-        point, &v4d_trigger_zone, &node->config.footprint) &&
-      !inside_front_safety_self_filter(node, point->x, point->y) &&
-      !dnp_point_inside_rider_self_filter(node, point->x, point->y))
+     * 统计均无差别。前方净距与障碍表都来自同一 canonical cloud。 */
+    if (dwa_point_inside_front_safety_lane(
+        point, &v4d_trigger_zone, &node->config.footprint))
     {
+      ++*(size_t *)&node->front_safety_candidates_this_tick;
       const float v4d_clearance = point->x - v4d_collision_front_edge;
+      ++*(size_t *)&node->front_safety_hits_this_tick;
       if (v4d_clearance <
         *(float *)&node->front_unclipped_clearance_this_tick)
       {
@@ -527,51 +408,7 @@ void dnp_project_base_cloud_to_grid(
     real_hit = range > 0.0f && range <= node->config.obstacle_range;
     if (!real_hit) continue;
 
-    if (base_points[i].side_safety_only) {
-      /* 9.28 Fix D：跨车身侧墙救援点（rm_fuse 捞出，幻影/骑乘带已
-       * 在源头剔除，这里足迹过滤兜底）。
-       * 与 9.27 旧 Fix B 的关键区别：除侧净距外【同时进 DWA 障碍表】
-       * ——025152 日志实锤：v3 门控期意图 w 恒 0 仍左右撞、规划器
-       * 持续朝 0.12m 近墙打满舵（sel w=-0.32），根因是晨间跨车身
-       * 裁剪令侧墙从未进过障碍表，规划器对侧墙全盲。现在碰撞判废
-       * 对称生效，让它自己看见墙。
-       * 仍不进：side_safety_points/侧硬停圆/front_no_turn_stop/
-       * 几何扫描缓冲/自由空间射线（角窗与圆判定对跨车身视角无
-       * 意义，且避免误触发既有安全通道）。栅格标记经由
-       * dnp_mark_fused_obstacles_in_grid(obstacles) 自动覆盖。 */
-      if (inside_footprint_self_filter(node, point->x, point->y)) {
-        continue;
-      }
-      ++*(size_t *)&node->side_flank_points_this_tick;
-      update_side_clearance_by_point_side(node, point, side_clearance);
-      if (point->x < node->params_snapshot.planning_min_x ||
-        fabsf(point->y) > node->params_snapshot.planning_max_abs_y) continue;
-      if (dnp_point_inside_rider_self_filter(node, point->x, point->y)) continue;
-      if (!dwa_grid_world_to_cell(grid, point->x, point->y, &cell_x, &cell_y)) continue;
-      /* points.push_back(point)——与主路径同一缓冲、同一容量增长 */
-      if (points->count == points->capacity) {
-        const size_t fresh_capacity = points->capacity == 0 ?
-          16 : points->capacity * 2;
-        dwa_point_t *fresh = (dwa_point_t *)realloc(
-          points->points, fresh_capacity * sizeof(dwa_point_t));
-        if (fresh == NULL) continue;
-        points->points = fresh;
-        points->capacity = fresh_capacity;
-      }
-      points->points[points->count++] = *point;
-      continue;
-    }
-
-    /* 仅对既有的角度掩码，从 base_link 点反推传感器本地角；
-     * 障碍点本身保持 base_link 坐标。 */
-    dx = point->x - mount->x;
-    dy = point->y - mount->y;
-    local_x = mount_cos * dx + mount_sin * dy;
-    local_y = -mount_sin * dx + mount_cos * dy;
-    sensor_angle = atan2f(local_y, local_x);
-    if (inside_local_foot_mask(node, is_left_scan, sensor_angle, range)) continue;
-    body_self_reflection = inside_footprint_self_filter(node, point->x, point->y);
-    if (!body_self_reflection) {
+    {
       /* side_safety_points.push_back(point) */
       if (side_safety_points->count == side_safety_points->capacity) {
         const size_t fresh_capacity = side_safety_points->capacity == 0 ?
@@ -595,18 +432,8 @@ void dnp_project_base_cloud_to_grid(
     if (grid_build) {
       dwa_raytrace_free(grid, mount->x, mount->y, point->x, point->y);
     }
-    if (body_self_reflection) {
-      /* C++ 侧 body_masked_points_this_tick_ 为 mutable（const 方法内递增）。 */
-      ++*(size_t *)&node->body_masked_points_this_tick;
-      continue;
-    }
     if (point->x < node->params_snapshot.planning_min_x ||
       fabsf(point->y) > node->params_snapshot.planning_max_abs_y) continue;
-
-    /* 9.24 转向修复：骑乘者身体包络（脚尖+膝盖，随车刚性同动）不进入
-     * 静态障碍表与几何扫描缓冲。留在这里会让 DWA 把骑乘者自身当障碍
-     * 绕行（转向意图失效、速度永久压接管）。 */
-    if (dnp_point_inside_rider_self_filter(node, point->x, point->y)) continue;
 
     if (!dwa_grid_world_to_cell(grid, point->x, point->y, &cell_x, &cell_y)) continue;
     /* points.push_back(point) */

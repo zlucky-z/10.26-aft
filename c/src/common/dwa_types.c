@@ -86,7 +86,7 @@ dwa_footprint_t dwa_footprint_default(void)
   memset(&fp, 0, sizeof(fp));
   fp.front = 0.34f;
   fp.back = 0.32f;
-  fp.half_width = 0.295f;
+  fp.half_width = 0.285f;
   fp.padding = 0.0f;
   fp.footrest_start = 0.0f;
   fp.footrest_front = 0.0f;
