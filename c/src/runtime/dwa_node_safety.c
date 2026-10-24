@@ -33,16 +33,9 @@
 
 /* ---------- 日志节流 key（每个调用点唯一字符串地址） ---------- */
 
-static const char *const kKeySweepYawLimit = "dns:sweep_yaw_limit";
-static const char *const kKeySweepEscape = "dns:sweep_escape";
-static const char *const kKeySweepForward = "dns:sweep_forward";
-static const char *const kKeySweepReverse = "dns:sweep_reverse";
-static const char *const kKeySweepTurnStop = "dns:sweep_turn_stop";
-static const char *const kKeySweepHardStop = "dns:sweep_hard_stop";
 static const char *const kKeyNeutralBefore = "dns:neutral_before";
 static const char *const kKeyNeutralDone = "dns:neutral_done";
 static const char *const kKeyFrontEscape = "dns:front_escape";
-static const char *const kKeyFrontHardStop = "dns:front_hard_stop";
 static const char *const kKeySideReverseStop = "dns:side_reverse_stop";
 static const char *const kKeyReverseBypass = "dns:reverse_bypass";
 static const char *const kKeyTurnSpeedGuard = "dns:turn_speed_guard";
@@ -588,112 +581,19 @@ bool dns_publish_motion_command_safely(
   const char *source,
   const planner_side_clearance_diagnostics_t *side_clearance)
 {
-  const dwa_planner_params_t *p = &node->params_snapshot;
-  const dwa_velocity_t command = { requested->linear_x, requested->angular_z };
-  dwa_side_safety_config_t config = side_safety_config(node);
-  const planner_side_hard_stop_decision_t guard = dwa_evaluate_side_sweep_guard(
-    &command, manual_intent, motor_feedback, perception_fresh,
-    safety_points->points, safety_points->count, &config);
-  if (!guard.stop) {
-    dwa_twist_t safe_command = *requested;
-    if (guard.yaw_limited) {
-      safe_command.angular_z = guard.limited_yawrate;
-      {
-        const float actual_yawrate = motor_feedback->fresh ?
-          (motor_feedback->right_mps - motor_feedback->left_mps) /
-          p->side_hard_stop_wheel_track_m : 0.0f;
-        hal_log_throttle(hal_steady_now_sec(), 200, kKeySweepYawLimit,
-          HAL_LOG_WARN,
-          "side sweep yaw limit source=%s direction=%s side=%s "
-          "predicted_t=%.2fs point=(%.3f,%.3f) requested(v=%.3f,w=%+.3f) "
-          "safe_w=%+.3f actual_w=%+.3f",
-          source, manual_turn_direction_name(guard.direction),
-          dwa_side_wall_hold_side_name(guard.side),
-          guard.prediction_time_sec, guard.point.x, guard.point.y,
-          command.v, command.w, guard.limited_yawrate, actual_yawrate);
-      }
-    }
-    dns_publish_regular_command(
-      node, &safe_command, hall_speed_control_active, mode, false);
-    return true;
-  }
-
-  /* DWA 只报告侧向硬停止脱困请求；安全方向与输出统一交由电机桥模块决定。 */
-  if (side_clearance != NULL && command.v > p->deadband_linear) {
-    dwa_twist_t stop;
-    dwa_twist_reset(&stop);
-    node->last_output_linear = 0.0f;
-    node->escape_request_pending = true;
-    dns_record_hard_stop_escape_event(
-      node, "SIDE_SWEEP", PLANNER_TURN_NONE, side_clearance);
-    dns_publish_command_without_trajectory(node, &stop, false, mode, true);
-    hal_log_throttle(hal_steady_now_sec(), 250, kKeySweepEscape,
-      HAL_LOG_WARN,
-      "side sweep hard stop escape delegated to motor bridge "
-      "side_clear(L=%.3f,R=%.3f) requested(v=%.3f,w=%+.3f)",
-      side_clearance->left, side_clearance->right, command.v, command.w);
-    return true;
-  }
-  /* 侧扫掠保护不做跨周期锁存：后退保持原有旁路，前进时只取消朝障碍侧的转向。
-   * 这里必须依据最终待发布的 command.v，而不是 manual_intent.v：DWA接管时
-   * 手柄意图可能已经为零，但DWA仍可能给出安全的正向线速度；此时不能把
-   * 侧边扫掠保护误升级为整车停车。
-   * 侧边圆是转弯扫掠保护，不等价于车体正前方碰撞；前方保护仍由前方硬停止
-   * 和轨迹碰撞负责。 */
-  {
-    const bool forward_intent = command.v > p->deadband_linear;
-    const bool reverse_intent = command.v < -p->deadband_linear;
-    if (forward_intent) {
-      dwa_twist_t straight = *requested;
-      straight.angular_z = 0.0f;
-      node->last_output_linear = straight.linear_x;
-      dns_publish_regular_command(
-        node, &straight, hall_speed_control_active, mode, false);
-      hal_log_throttle(hal_steady_now_sec(), 250, kKeySweepForward,
-        HAL_LOG_WARN,
-        "侧扫掠保护：前进保留线速度，仅取消危险侧转向 "
-        "source=%s side=%s radius=%.3fm point=(%.3f,%.3f) out(v=%.3f,w=0.000)",
-        source, dwa_side_wall_hold_side_name(guard.side),
-        guard.radius, guard.point.x, guard.point.y, straight.linear_x);
-      return true;
-    }
-    if (!forward_intent) {
-      if (reverse_intent) {
-        dns_publish_regular_command(
-          node, requested, hall_speed_control_active, mode, false);
-        hal_log_throttle(hal_steady_now_sec(), 250, kKeySweepReverse,
-          HAL_LOG_WARN,
-          "侧扫掠保护：后退保持原始指令 raw(v=%.3f,w=%+.3f)",
-          manual_intent->v, manual_intent->w);
-        return true;
-      }
-      {
-        dwa_twist_t turn_stop;
-        dwa_twist_reset(&turn_stop);
-        dns_publish_regular_command(node, &turn_stop, false, mode, false);
-        hal_log_throttle(hal_steady_now_sec(), 250, kKeySweepTurnStop,
-          HAL_LOG_WARN,
-          "侧扫掠保护：当前周期禁止危险转向 raw(v=%.3f,w=%+.3f)",
-          manual_intent->v, manual_intent->w);
-      }
-      return false;
-    }
-    {
-      dwa_twist_t stop;
-      dwa_twist_reset(&stop);
-      node->last_output_linear = 0.0f;
-      node->escape_request_pending = true;
-      dns_record_hard_stop_escape_event(
-        node, "SIDE_SWEEP", PLANNER_TURN_NONE, side_clearance);
-      dns_publish_regular_command(node, &stop, false, mode, true);
-      hal_log_throttle(hal_steady_now_sec(), 250, kKeySweepHardStop,
-        HAL_LOG_ERROR,
-        "side sweep hard stop; escape request delegated to bridge "
-        "side_clear(L=%.3f,R=%.3f)",
-        side_clearance->left, side_clearance->right);
-    }
-    return true;
-  }
+  /* DWA 输出不再经过侧扫掠二次拦截。侧扫掠可能把已有安全轨迹
+   * 改成零速度或触发脱困；前方硬停止、DWA 碰撞检查和侧边圆/梯形
+   * 保护仍在各自的上游路径中生效。 */
+  (void)node;
+  (void)motor_feedback;
+  (void)perception_fresh;
+  (void)safety_points;
+  (void)manual_intent;
+  (void)source;
+  (void)side_clearance;
+  dns_publish_regular_command(
+    node, requested, hall_speed_control_active, mode, false);
+  return true;
 }
 
 /* publish_motion_command_without_trajectory_safely(...) 直译。 */
@@ -740,13 +640,14 @@ bool dns_handle_manual_bypass(
   dwa_side_safety_config_t sconfig = side_safety_config(node);
   (void)nearest_radar_distance;
   planner_side_hard_stop_decision_t side_hard_stop;
-  bool forward_hard_stop;
-  bool front_no_turn_hard_stop;
-  bool forward_hard_stop_active;
   bool side_hard_stop_active;
   bool nearby_front_obstacle;
   bool nearby_side_obstacle;
   bool nearby_obstacle;
+
+  (void)hard_stop_latched;
+  (void)front_nearest_radar_distance;
+  (void)front_no_turn_stop;
 
   dwa_twist_reset(&output);
   /* 中立意味着本次硬停止事件结束，清除两周期方向保持状态。 */
@@ -789,28 +690,15 @@ bool dns_handle_manual_bypass(
     return true;
   }
 
-  /* D6在近于最小稳定量程时会饱和到约6cm；前方/侧方硬停止
-   * 仍先按原有保护条件判定，再由统一脱困策略决定是否允许低速转向。 */
+  /* 前方障碍不再由 manual_bypass 抢先硬停；前方继续/绕行/停车
+   * 统一交给 DWA 轨迹结果。这里仅保留侧边圆形硬停和倒车保护。 */
   {
-    const bool front_radar_contact =
-      isfinite(front_nearest_radar_distance) &&
-      front_nearest_radar_distance <= p->radar_contact_distance;
-    const bool front_envelope_intrusion = isfinite(front_clearance) &&
-      front_clearance <= 0.0f;
-    forward_hard_stop = raw_intent->v > p->deadband_linear &&
-      (hard_stop_latched || (perception_fresh &&
-      (front_radar_contact || front_envelope_intrusion)));
-    front_no_turn_hard_stop = perception_fresh &&
-      front_no_turn_stop->point_count > 0 &&
-      raw_intent->v >= -p->deadband_linear;
     side_hard_stop = dwa_evaluate_side_hard_stop_circle(
       raw_intent, perception_fresh, side_hard_stop_circle, &sconfig);
-    forward_hard_stop_active = forward_hard_stop || front_no_turn_hard_stop;
     side_hard_stop_active = side_hard_stop.stop;
     nearby_front_obstacle = perception_fresh &&
       ((isfinite(front_clearance) &&
-      front_clearance <= dc->moving_dwa_trigger_distance) ||
-      front_no_turn_stop->point_count > 0 || forward_hard_stop_active);
+      front_clearance <= dc->moving_dwa_trigger_distance));
     nearby_side_obstacle = perception_fresh &&
       ((isfinite(side_clearance->left) &&
       side_clearance->left <= dc->side_limit_distance) ||
@@ -820,13 +708,12 @@ bool dns_handle_manual_bypass(
     nearby_obstacle = nearby_front_obstacle || nearby_side_obstacle;
   }
 
-  if (!forward_hard_stop_active && !side_hard_stop_active) {
+  if (!side_hard_stop_active) {
     /* 没有任何硬停止的周期结束上一事件，避免下一次侧扫掠沿用旧方向。 */
     reset_hard_stop_escape_state(node);
   }
 
-  if (forward_hard_stop_active ||
-    (side_hard_stop_active && raw_intent->v >= -p->deadband_linear))
+  if (side_hard_stop_active && raw_intent->v >= -p->deadband_linear)
   {
     dwa_dynamic_velocity_fusion_reset(&node->dynamic_fusion);
     dwa_side_wall_hold_controller_reset(&node->side_wall_hold_controller);
@@ -838,23 +725,15 @@ bool dns_handle_manual_bypass(
       if (request_escape) {
         node->escape_request_pending = true;
         dns_record_hard_stop_escape_event(
-          node, forward_hard_stop_active ? "FRONT" : "SIDE",
+          node, "SIDE",
           PLANNER_TURN_NONE, side_clearance);
         hal_log_throttle(hal_steady_now_sec(), 250, kKeyFrontEscape,
           HAL_LOG_WARN,
-          "hard stop escape delegated type=%s side_clear(L=%.3f,R=%.3f)",
-          forward_hard_stop_active ? "FRONT" : "SIDE",
+          "hard stop escape delegated type=SIDE side_clear(L=%.3f,R=%.3f)",
           side_clearance->left, side_clearance->right);
       }
       dns_publish_command_without_trajectory(
         node, &output, false, DYNAMIC_CONTROL_HAND, request_escape);
-    }
-    if (raw_intent->v <= p->deadband_linear && forward_hard_stop_active) {
-      hal_log_throttle(hal_steady_now_sec(), 250, kKeyFrontHardStop,
-        HAL_LOG_ERROR,
-        "front hard stop: no live forward intent; escape not requested "
-        "front_clear=%.3f side_clear(L=%.3f,R=%.3f)",
-        front_clearance, side_clearance->left, side_clearance->right);
     }
     return true;
   }

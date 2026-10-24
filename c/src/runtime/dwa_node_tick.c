@@ -32,7 +32,6 @@
 static const char *const kKeyFusedCloud = "dnt:fused_cloud";
 static const char *const kKeySideWall = "dnt:side_wall";
 static const char *const kKeyNearGear = "dnt:near_gear";
-static const char *const kKeyHardStopLatch = "dnt:hard_stop_latch";
 static const char *const kKeyCloudStale = "dnt:cloud_stale";
 static const char *const kKeyNoTakeover = "dnt:no_takeover";
 static const char *const kKeyGeoApplied = "dnt:geo_applied";
@@ -42,6 +41,58 @@ static const char *const kKeyHandGuardUnsafe = "dnt:hand_guard_unsafe";
 static const char *const kKeyFinal = "dnt:final";
 static const char *const kKeyManualTurnPenalty = "dnt:manual_turn_penalty"; /* AC1(10.10) 方案A */
 static const char *const kKeyIntentFreeze = "dnt:intent_freeze";           /* AC2(10.10) 方案C */
+static const char *const kKeyControllerPriority = "dnt:controller_priority";
+
+/*
+ * 明确手柄转向时，DWA 只能在手柄同向的有效候选中重新选轨迹。
+ * 这里必须在 tick 层重选，而不能只依赖 intent_freeze_min_yawrate：
+ * 后者只处理“同向候选全部失效”，不能阻止正常情况下评分选出直行
+ * 或反向候选。
+ */
+static bool dnt_select_intent_direction_trajectory(
+  dwa_plan_result_t *result, const dwa_config_t *config,
+  float intent_w, float direction_epsilon)
+{
+  const int desired_direction = dwa_turn_direction(intent_w, direction_epsilon);
+  const dwa_trajectory_t *best = NULL;
+  const float tie_epsilon = 1e-4f;
+
+  if (result == NULL || config == NULL || desired_direction == 0) {
+    return false;
+  }
+
+  for (size_t i = 0; i < result->trajectory_count; ++i) {
+    const dwa_trajectory_t *candidate = &result->trajectories[i];
+    const int candidate_direction = dwa_turn_direction(
+      candidate->command.w, direction_epsilon);
+    if (!candidate->valid || candidate_direction != desired_direction) {
+      continue;
+    }
+    if (best == NULL || candidate->total_cost < best->total_cost - tie_epsilon ||
+      (fabsf(candidate->total_cost - best->total_cost) <= tie_epsilon &&
+       fabsf(candidate->command.w - intent_w) <
+       fabsf(best->command.w - intent_w) - 1e-6f))
+    {
+      best = candidate;
+    }
+  }
+
+  if (best != NULL) {
+    result->selected = best->command;
+    dwa_trajectory_copy(&result->selected_trajectory, best);
+    return true;
+  }
+
+  /* 同向没有安全轨迹时停车；不能保留评分阶段已经选出的反向轨迹。 */
+  {
+    const dwa_velocity_t zero = {0.0f, 0.0f};
+    result->selected = zero;
+    dwa_generate_trajectory_into(&zero, config, &result->selected_trajectory);
+    result->selected_trajectory.valid = false;
+    result->selected_trajectory.reject_reason = "no_safe_intent_direction";
+  }
+  return false;
+}
 
 /* 记录 DWA 无有效轨迹事件；连续多个 tick 只计一次，便于和电机桥兜底脱困比较。 */
 static void dnt_record_no_valid_dwa_event(
@@ -163,7 +214,6 @@ void dwa_node_tick(dwa_node_t *node)
   dwa_velocity_t hand_intent;
   dwa_dynamic_velocity_decision_t raw_decision;
   dwa_dynamic_velocity_decision_t decision;
-  bool hard_stop_condition;
   bool moving_dwa_takeover;
   bool static_dwa_takeover;
   bool forward_corridor_clear;
@@ -187,7 +237,7 @@ void dwa_node_tick(dwa_node_t *node)
   bool first_moving_dwa_plan;
   bool output_hall_speed_control_active;
   bool final_command_published;
-  bool hard_stop_latched = false; /* C++ hard_stop_latched_ 的本周期局部镜像 */
+  bool controller_priority_active;
 
   /* geometric_selection 默认构造（C++ 声明即构造；tick_exit 统一 destroy）。 */
   dwa_geometric_selection_init(&geometric_selection);
@@ -417,17 +467,10 @@ void dwa_node_tick(dwa_node_t *node)
   }
   dynamic_input.near_obstacle_gear_active = node->near_obstacle_gear_latched;
 
-  /* 硬停止只按当前新鲜融合点云的当前周期判定，不做跨周期锁存。
-   * 障碍物离开前方硬停止区域后，下一周期立即允许重新规划/运动；
-   * 障碍物仍在前方时，当前周期仍由安全控制强制停止。 */
-  hard_stop_condition = fused_cloud_fresh &&
-    ((isfinite(obstacle_diag.nearest_front_radar_distance) &&
-    obstacle_diag.nearest_front_radar_distance <= p->radar_contact_distance) ||
-    (isfinite(dynamic_input.front_clearance) &&
-    dynamic_input.front_clearance <= 0.0f));
-  node->hard_stop_latched = hard_stop_condition;
+  /* 前方接触/脚尖净距不再在 DWA 之前硬停。前方是否可行只由 DWA
+   * 轨迹碰撞评估决定；这些诊断量仍保留供日志和规划使用。 */
+  node->hard_stop_latched = false;
   node->hard_stop_clear_cycles = 0;
-  hard_stop_latched = node->hard_stop_latched;
 
   corridor_input.points = side_safety_points->points;
   corridor_input.points_count = side_safety_points->count;
@@ -647,32 +690,16 @@ void dwa_node_tick(dwa_node_t *node)
         node->bypass_near_zone_ramp_active = false;
         node->bypass_near_zone_ramp_done = false;
       }
-      /* B1(10.09)：锁存态近距减速——前净距 < moving_prebrake_profile_
-       * zero_distance(0.40m) 时 target 按 forward_speed_limit×净距/zero
-       * 线性归零（净距≤0 → 0）。103434 末段实锤：F1d 锁存态无近距减速，
-       * cap 恒 0.70 到底，净距 0.05m 仍 sel 0.73——配合零余量碰撞判定
-       * （障碍格中心须进足迹矩形才判死）形成末段挤压。
-       * 复用既有 prebrake profile 的 zero 距离语义（曲线现成，无新参数）；
-       * 只在近距段生效：净距 ≥0.40m 两态行为不变。F1c 教训（2.2m 起
-       * 压速与 DWA 绕行抢速度）不复发——起压点仅 0.40m 接触段。
-       * 不依赖实速；净距无效（INF）时不介入。 */
-      if (node->bypass_near_zone_latched) {
-        const float zero_v = dc->moving_prebrake_profile_zero_distance;
-        if (zero_v > 0.0f && isfinite(clearance) && clearance < zero_v) {
-          float near_cap = dc->forward_speed_limit * (clearance / zero_v);
-          if (near_cap < 0.0f) {
-            near_cap = 0.0f;
-          }
-          if (near_cap < target) {
-            target = near_cap;
-          }
-        }
-      }
+      /* B1 末端减速已旁路：不能在 DWA 接管前把目标速度按最后一小段
+       * 净距线性压到 0，否则车辆会先停在障碍物前，再失去转弯机会。
+       * 末端安全由 DWA 轨迹碰撞检查和现有硬停止保护负责；
+       * moving_prebrake_profile_zero_distance 保留为兼容配置字段，当前
+       * 旁路分支不再消费它。 */
       raw_decision.target_max_velocity = target;
       raw_decision.held_forward_speed = target;
     }
     raw_decision.dwa_takeover = dynamic_input.forward_intent &&
-      dynamic_input.perception_fresh && !hard_stop_latched;
+      dynamic_input.perception_fresh;
     raw_decision.hall_speed_control_active = true;
     raw_decision.raw_gear = dynamic_input.raw_gear;
     raw_decision.raw_gear_valid = dynamic_input.raw_gear_valid;
@@ -726,7 +753,7 @@ void dwa_node_tick(dwa_node_t *node)
 
   if (dns_handle_manual_bypass(
       node, &intent, &hand_intent, &side_wall_hold, &raw_decision,
-      dynamic_input.perception_fresh, hard_stop_latched,
+      dynamic_input.perception_fresh, false,
       dynamic_input.front_clearance,
       obstacle_diag.nearest_front_radar_distance,
       dynamic_input.global_nearest_radar_distance, &side_clearance_diag,
@@ -739,21 +766,6 @@ void dwa_node_tick(dwa_node_t *node)
   }
 
   decision = raw_decision;
-  if (hard_stop_latched && intent.v > p->deadband_linear) {
-    /* handle_manual_bypass 通常在上面返回；此守卫防止后续任何重构让
-     * 正向 DWA 轨迹穿过锁存。 */
-    hal_log_throttle(hal_steady_now_sec(), 250, kKeyHardStopLatch,
-      HAL_LOG_ERROR,
-      "前方硬停止锁存阻止DWA正向输出：front_clear=%.3f "
-      "front_nearest_radar=%.3f global_nearest_radar=%.3f intent_v=%.3f",
-      dynamic_input.front_clearance,
-      obstacle_diag.nearest_front_radar_distance,
-      dynamic_input.global_nearest_radar_distance,
-      intent.v);
-    strncpy(node->diag_path, "hard_stop", sizeof(node->diag_path) - 1);
-    node->diag_path[sizeof(node->diag_path) - 1] = '\0';
-    goto tick_exit;
-  }
   moving_dwa_takeover = decision.dwa_takeover &&
     decision.mode == DYNAMIC_CONTROL_MOVING_DWA;
   static_dwa_takeover = decision.dwa_takeover &&
@@ -1045,6 +1057,25 @@ void dwa_node_tick(dwa_node_t *node)
   (void)plan_ms; /* Timing remains available through the tick timing collector. */
   (void)planning_hold_target; /* Retained for timing/diagnostic parity. */
   raw_dwa_selected = result->selected;
+  controller_priority_active = decision.dwa_takeover &&
+    dynamic_input.forward_intent &&
+    fabsf(intent.w) > p->deadband_angular;
+  if (controller_priority_active) {
+    const bool same_direction_available =
+      dnt_select_intent_direction_trajectory(
+        result, &planning_config, intent.w, p->deadband_angular);
+    hal_log_throttle(hal_steady_now_sec(), 250,
+      kKeyControllerPriority,
+      same_direction_available ? HAL_LOG_INFO : HAL_LOG_WARN,
+      "dwa controller-priority intent_w=%+.3f raw(v=%.3f,w=%+.3f) "
+      "same_direction=%d selected(v=%.3f,w=%+.3f) valid=%d reason=%s",
+      intent.w, raw_dwa_selected.v, raw_dwa_selected.w,
+      same_direction_available ? 1 : 0,
+      result->selected.v, result->selected.w,
+      result->selected_trajectory.valid ? 1 : 0,
+      result->selected_trajectory.reject_reason != NULL ?
+        result->selected_trajectory.reject_reason : "");
+  }
   dnt_record_no_valid_dwa_event(
     node,
     decision.dwa_takeover && dynamic_input.perception_fresh &&
@@ -1077,7 +1108,8 @@ void dwa_node_tick(dwa_node_t *node)
   node->diag_path[sizeof(node->diag_path) - 1] = '\0';
   raw_dwa_direction = dwa_turn_direction(
     raw_dwa_selected.w, p->deadband_angular);
-  if (decision.dwa_takeover && result->selected_trajectory.valid)
+  if (decision.dwa_takeover && result->selected_trajectory.valid &&
+    !controller_priority_active)
   {
     dwa_geometric_selector_input_t selector_input =
       dwa_geometric_selector_input_default();
@@ -1203,13 +1235,18 @@ void dwa_node_tick(dwa_node_t *node)
     }
   } else {
     dwa_geometric_selector_reset_geometry_target(&node->geometric_selector);
-    geometric_selection.reason = decision.dwa_takeover ?
-      "no_valid_dwa_trajectory" : "dwa_inactive";
+    geometric_selection.reason = controller_priority_active ?
+      "manual_intent_direction_priority" : (decision.dwa_takeover ?
+      "no_valid_dwa_trajectory" : "dwa_inactive");
   }
   publish_geometric_selection_stub(node, &geometric_selection);
 
   /* DWA 不接管时，验证直控轨迹是否安全。 */
-  if (!decision.dwa_takeover && forward_corridor_clear) {
+  if (controller_priority_active) {
+    hand_command_requested = true;
+    hand_command_source = "manual_turn_priority";
+    hand_angular = intent.w;
+  } else if (!decision.dwa_takeover && forward_corridor_clear) {
     hand_command_requested = true;
     hand_command_source = "corridor_clear";
     hand_angular = hand_intent.w;
@@ -1250,7 +1287,8 @@ void dwa_node_tick(dwa_node_t *node)
       dwa_config_t hand_eval_config = planning_config;
       hand_eval_config.collision_veto_enabled = false;
       dwa_evaluate_command_trajectory_into(
-        &hand_command, obstacles->points, obstacles->count, &hand_intent,
+        &hand_command, obstacles->points, obstacles->count,
+        controller_priority_active ? &intent : &hand_intent,
         runtime_max_velocity, &hand_eval_config, &hand_trajectory,
         occupancy_grid, &node->dwa_spatial_index_workspace,
         &node->dwa_blocking_index_workspace);
