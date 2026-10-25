@@ -50,6 +50,10 @@ add_executable(test_side_sweep_switch test_side_sweep_switch.c)
 target_link_libraries(test_side_sweep_switch dwa_safety m)
 add_test(NAME side_sweep_switch COMMAND test_side_sweep_switch)
 
+add_executable(test_side_triangle_stop test_side_triangle_stop.c)
+target_link_libraries(test_side_triangle_stop dwa_safety m)
+add_test(NAME side_triangle_stop COMMAND test_side_triangle_stop)
+
 # Front-corner returns must not masquerade as a close physical side wall.
 add_executable(test_side_clearance_sector test_side_clearance_sector.c)
 target_link_libraries(test_side_clearance_sector dwa_runtime)

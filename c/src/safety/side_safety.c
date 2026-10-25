@@ -65,6 +65,108 @@ static void ssf_set_side_collision(
   target->radius = radius;
 }
 
+/* Return the physical half-width at x, including the narrower footrest/toe
+ * sections.  The side guard uses the same base_link footprint as DWA. */
+static float ssf_triangle_base_half_width(
+  float x, const dwa_footprint_t *footprint)
+{
+  if (x <= footprint->front) return footprint->half_width;
+  if (footprint->footrest_start > footprint->front &&
+    x < footprint->footrest_start)
+  {
+    const float span = footprint->footrest_start - footprint->front;
+    const float t = span > 0.0f ?
+      (x - footprint->front) / span : 1.0f;
+    return footprint->half_width + t *
+      (footprint->footrest_half_width - footprint->half_width);
+  }
+  if (x <= footprint->footrest_front) {
+    return footprint->footrest_half_width;
+  }
+  return footprint->toe_half_width;
+}
+
+/* The stop band grows from zero at the rear edge to gap_m at the body front;
+ * beyond the body front it follows the footrest/toe envelope. */
+static bool ssf_point_inside_side_triangle(
+  const dwa_point_t *point,
+  const dwa_footprint_t *footprint,
+  float gap_m,
+  bool left,
+  float *clearance_out)
+{
+  const float end_x = footprint->toe_front > footprint->footrest_front ?
+    footprint->toe_front : footprint->footrest_front;
+  const float x0 = -footprint->back;
+  const float base = ssf_triangle_base_half_width(point->x, footprint);
+  float boundary;
+  float signed_y;
+
+  if (point->x < x0 || point->x > end_x) return false;
+  signed_y = left ? point->y : -point->y;
+  if (signed_y <= base) return false;
+
+  if (point->x <= footprint->front) {
+    const float span = footprint->front - x0;
+    const float t = span > 0.0f ?
+      (point->x - x0) / span : 1.0f;
+    boundary = base + gap_m *
+      (t < 0.0f ? 0.0f : (t > 1.0f ? 1.0f : t));
+  } else {
+    boundary = base + gap_m;
+  }
+  if (signed_y > boundary) return false;
+  if (clearance_out != NULL) *clearance_out = signed_y - base;
+  return true;
+}
+
+planner_side_hard_stop_decision_t dwa_evaluate_side_triangle_stop(
+  const dwa_velocity_t *command,
+  bool perception_fresh,
+  const dwa_point_t *obstacles,
+  size_t obstacle_count,
+  const dwa_side_safety_config_t *config)
+{
+  planner_side_hard_stop_decision_t decision =
+    planner_side_hard_stop_decision_default();
+  float angle_deg = 90.0f;
+  planner_manual_turn_direction_t direction;
+  bool left;
+  float best_clearance = INFINITY;
+
+  if (command == NULL || config == NULL || !config->triangle_enabled ||
+    !perception_fresh || obstacles == NULL || obstacle_count == 0)
+  {
+    return decision;
+  }
+
+  direction = dwa_manual_turn_direction_with_reverse(
+    command, &config->turn, &angle_deg);
+  if (direction == PLANNER_TURN_NONE) return decision;
+  left = direction == PLANNER_TURN_LEFT;
+
+  for (size_t i = 0; i < obstacle_count; ++i) {
+    const dwa_point_t *point = &obstacles[i];
+    float clearance = INFINITY;
+    if (!isfinite(point->x) || !isfinite(point->y) ||
+      !ssf_point_inside_side_triangle(point, &config->footprint,
+        config->triangle_stop_gap_m, left, &clearance))
+    {
+      continue;
+    }
+    if (clearance < best_clearance) {
+      best_clearance = clearance;
+      decision.stop = true;
+      decision.direction = direction;
+      decision.side = left ? DWA_SIDE_HOLD_LEFT : DWA_SIDE_HOLD_RIGHT;
+      decision.point = *point;
+      decision.prediction_time_sec = 0.0f;
+      decision.radius = clearance;
+    }
+  }
+  return decision;
+}
+
 planner_side_hard_stop_decision_t dwa_evaluate_side_hard_stop_circle(
   const dwa_velocity_t *intent,
   bool perception_fresh,

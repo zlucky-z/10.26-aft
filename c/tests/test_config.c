@@ -158,6 +158,8 @@ int main(int argc, char **argv)
   expect_double("moving_prebrake_y_down_rate_max", params.moving_prebrake_y_down_rate_max, 80.0);
   expect_double("side_detection_angle_deg", params.side_detection_angle_deg, 20.0);
   expect_int("side_hard_stop_sweep_enabled", params.side_hard_stop_sweep_enabled, 0);
+  expect_int("side_hard_stop_triangle_enabled", params.side_hard_stop_triangle_enabled, 1);
+  expect_double("side_hard_stop_triangle_gap_m", params.side_hard_stop_triangle_gap_m, 0.20);
   expect_double("side_hard_stop_circle_radius", params.side_hard_stop_circle_radius, 0.50);
   expect_double("front_hard_stop_escape_linear_speed", params.front_hard_stop_escape_linear_speed, 0.00);
   expect_double("front_hard_stop_escape_yawrate", params.front_hard_stop_escape_yawrate, 0.50);

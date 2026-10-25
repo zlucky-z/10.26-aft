@@ -758,7 +758,7 @@ void dwa_node_tick(dwa_node_t *node)
       obstacle_diag.nearest_front_radar_distance,
       dynamic_input.global_nearest_radar_distance, &side_clearance_diag,
       &side_hard_stop_circle_diag, &front_no_turn_stop_diag,
-      &motor_feedback, side_safety_points))
+       &motor_feedback, obstacles))
   {
     strncpy(node->diag_path, "manual_bypass", sizeof(node->diag_path) - 1);
     node->diag_path[sizeof(node->diag_path) - 1] = '\0';
@@ -1241,12 +1241,10 @@ void dwa_node_tick(dwa_node_t *node)
   }
   publish_geometric_selection_stub(node, &geometric_selection);
 
-  /* DWA 不接管时，验证直控轨迹是否安全。 */
-  if (controller_priority_active) {
-    hand_command_requested = true;
-    hand_command_source = "manual_turn_priority";
-    hand_angular = intent.w;
-  } else if (!decision.dwa_takeover && forward_corridor_clear) {
+  /* DWA 不接管时，验证直控轨迹是否安全。Controller priority 只在上方
+   * 重新筛选同向 DWA 候选；DWA 已接管时禁止再进入 hand_safe，避免用
+   * 原始手柄线速度覆盖 DWA 的 selected.v。 */
+  if (!decision.dwa_takeover && forward_corridor_clear) {
     hand_command_requested = true;
     hand_command_source = "corridor_clear";
     hand_angular = hand_intent.w;
@@ -1304,7 +1302,7 @@ void dwa_node_tick(dwa_node_t *node)
       node->diag_path[sizeof(node->diag_path) - 1] = '\0';
       hand_command_published = dns_publish_motion_command_safely(
         node, &output, false, decision.mode, &motor_feedback,
-        dynamic_input.perception_fresh, side_safety_points, &intent,
+         dynamic_input.perception_fresh, obstacles, &intent,
         "safe_hand_override", &side_clearance_diag);
       publish_candidates_stub(node, result);
       if (hand_command_published) {
@@ -1366,7 +1364,7 @@ void dwa_node_tick(dwa_node_t *node)
   output_hall_speed_control_active = true;
   final_command_published = dns_publish_motion_command_safely(
     node, &output, output_hall_speed_control_active, decision.mode,
-    &motor_feedback, dynamic_input.perception_fresh, side_safety_points,
+     &motor_feedback, dynamic_input.perception_fresh, obstacles,
     &intent, "dwa_final", &side_clearance_diag);
   if (!final_command_published) {
     if (moving_dwa_takeover) node->moving_dwa_command_published = true;

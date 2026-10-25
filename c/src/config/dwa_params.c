@@ -241,10 +241,12 @@ void dwa_planner_params_defaults(dwa_planner_params_t *p)
   p->manual_turn_forward_min_angle_deg = 65.0f;
   p->manual_turn_forward_max_angle_deg = 115.0f;
   p->side_hard_stop_circle_enabled = true;
+  p->side_hard_stop_triangle_enabled = true;
   p->side_hard_stop_sweep_enabled = true;
   p->side_hard_stop_circle_center_x = 0.51f;
   p->side_hard_stop_circle_center_y = 0.0f;
   p->side_hard_stop_circle_radius = 0.44f;
+  p->side_hard_stop_triangle_gap_m = 0.20f;
   p->side_hard_stop_reverse_escape_yawrate = 0.30f;
   p->side_hard_stop_wheel_track_m = 0.50f;
   p->side_hard_stop_sweep_prediction_sec = 0.45f;
@@ -611,10 +613,13 @@ int dwa_planner_params_load(const char *yaml_path, dwa_planner_params_t *p)
   p->manual_turn_forward_min_angle_deg = dwa_clamp_value(dwa_yaml_get_double(d, "manual_turn_forward_min_angle_deg", p->manual_turn_forward_min_angle_deg), 0.0f, 90.0f);
   p->manual_turn_forward_max_angle_deg = dwa_clamp_value(dwa_yaml_get_double(d, "manual_turn_forward_max_angle_deg", p->manual_turn_forward_max_angle_deg), 90.0f, 180.0f);
   p->side_hard_stop_circle_enabled = dwa_yaml_get_bool(d, "side_hard_stop_circle_enabled", p->side_hard_stop_circle_enabled);
+  p->side_hard_stop_triangle_enabled = dwa_yaml_get_bool(d, "side_hard_stop_triangle_enabled", p->side_hard_stop_triangle_enabled);
   p->side_hard_stop_sweep_enabled = dwa_yaml_get_bool(d, "side_hard_stop_sweep_enabled", p->side_hard_stop_sweep_enabled);
   p->side_hard_stop_circle_center_x = dwa_yaml_get_double(d, "side_hard_stop_circle_center_x", p->side_hard_stop_circle_center_x);
   p->side_hard_stop_circle_center_y = dwa_yaml_get_double(d, "side_hard_stop_circle_center_y", p->side_hard_stop_circle_center_y);
   p->side_hard_stop_circle_radius = dwa_yaml_get_double(d, "side_hard_stop_circle_radius", p->side_hard_stop_circle_radius);
+  p->side_hard_stop_triangle_gap_m = dwa_yaml_get_double(d, "side_hard_stop_triangle_gap_m", p->side_hard_stop_triangle_gap_m);
+  if (p->side_hard_stop_triangle_gap_m < 0.0f) p->side_hard_stop_triangle_gap_m = 0.0f;
   p->side_hard_stop_reverse_escape_yawrate = dwa_yaml_get_double(d, "side_hard_stop_reverse_escape_yawrate", p->side_hard_stop_reverse_escape_yawrate);
   p->side_hard_stop_wheel_track_m = dwa_yaml_get_double(d, "side_hard_stop_wheel_track_m", p->side_hard_stop_wheel_track_m);
   p->side_hard_stop_sweep_prediction_sec = dwa_yaml_get_double(d, "side_hard_stop_sweep_prediction_sec", p->side_hard_stop_sweep_prediction_sec);

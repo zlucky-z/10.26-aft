@@ -38,3 +38,8 @@ Thumbs.db
 
 build_verify_*/
 logs_analysis/
+
+# Local build, board-log, and deployment staging directories
+build-*/
+board-log-analysis/
+deploy-staging/

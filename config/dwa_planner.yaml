@@ -405,7 +405,9 @@ dwa_local_planner:
     manual_turn_forward_min_angle_deg: 65.0 # 手动转向判定的最小前向角，单位deg
     manual_turn_forward_max_angle_deg: 115.0 # 手动转向判定的最大前向角，单位deg
     # Side hard stop uses only fused real radar points, not DWA scoring.
-    side_hard_stop_circle_enabled: true # 是否启用侧边硬停止圆形保护
+    side_hard_stop_circle_enabled: false # 旧圆形保护已停用，仅保留兼容字段
+    side_hard_stop_triangle_enabled: true # 启用按车体包络计算的侧边三角转向保护
+    side_hard_stop_triangle_gap_m: 0.20 # 三角保护距车体外沿的强停距离，单位m
     side_hard_stop_sweep_enabled: false # Predictive side sweep off; direct side-circle stop stays on
     # 圆心前移以覆盖车体前半部、脚踏板和脚尖安全区，保留车尾后部的非保护区域。
     side_hard_stop_circle_center_x: 0.30 # 侧边硬停止保护圆心x坐标，单位m
@@ -500,7 +502,7 @@ dwa_local_planner:
     trajectory_score_log_interval_ms: 1000 # 评分日志输出间隔，单位ms
 
     # Migrated 8.21 corridor guidance only; short-term map intentionally omitted.
-    dwa_corridor_guide_enabled: false # 关闭通道参考线引导，完全由DWA基于融合点云避障
+    dwa_corridor_guide_enabled: true # 启用通道入口/中心线软引导，最终安全仍由DWA碰撞检查决定
     # 通道检测从雷达前更近处开始，避免车头已接近通道口时边缘点被提前排除。
     dwa_corridor_search_start_x: 0.25 # 通道搜索起始x坐标，单位m
     dwa_corridor_search_end_x: 1.80 # 通道搜索结束x坐标，单位m

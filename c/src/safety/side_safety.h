@@ -1,5 +1,5 @@
 /*
- * 模块功能：侧边圆形硬停和扫掠预测保护计算。
+ * 模块功能：侧边三角转向保护和扫掠预测保护计算。
  * 直译自 native/safety/side_safety.hpp（逐行对应，不改逻辑/默认值/执行顺序）。
  */
 #ifndef DWA_SIDE_SAFETY_H
@@ -18,8 +18,11 @@ extern "C" {
 #endif
 
 typedef struct {
+  bool triangle_enabled;
   bool circle_enabled;
   bool sweep_enabled;
+  float triangle_stop_gap_m;
+  dwa_footprint_t footprint;
   float circle_center_x;
   float circle_center_y;
   float circle_radius;
@@ -36,8 +39,11 @@ typedef struct {
 static inline dwa_side_safety_config_t dwa_side_safety_config_default(void)
 {
   dwa_side_safety_config_t config;
+  config.triangle_enabled = true;
   config.circle_enabled = true;
   config.sweep_enabled = true;
+  config.triangle_stop_gap_m = 0.20f;
+  config.footprint = dwa_footprint_default();
   config.circle_center_x = 0.51f;
   config.circle_center_y = 0.0f;
   config.circle_radius = 0.44f;
@@ -51,10 +57,15 @@ static inline dwa_side_safety_config_t dwa_side_safety_config_default(void)
   return config;
 }
 
-/*
- * predict_side_circle_entry(point, linear_speed, yawrate, horizon_sec, config,
- *                            &entry_time_sec, &entry_radius) 直译。
- */
+/* 当前控制链使用三角区域保护；圆形/扫掠接口保留给历史测试和兼容代码。 */
+planner_side_hard_stop_decision_t dwa_evaluate_side_triangle_stop(
+  const dwa_velocity_t *command,
+  bool perception_fresh,
+  const dwa_point_t *obstacles,
+  size_t obstacle_count,
+  const dwa_side_safety_config_t *config);
+
+/* predict_side_circle_entry(...) 历史扫掠几何接口。 */
 bool dwa_predict_side_circle_entry(
   const dwa_point_t *point,
   float linear_speed,
