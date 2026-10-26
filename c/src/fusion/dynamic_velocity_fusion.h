@@ -111,13 +111,6 @@ typedef struct {
    * release 阈值才解除近障锁存。治感知单周期闪烁导致的 yo-yo
    * 回冲（cap 瞬间回档位峰值→重新加速→再次断崖）。0=原单周期行为。 */
   int bypass_near_zone_release_hold_cycles;
-  /* V4b(10.08)：F1d 断崖斜坡——进近障区瞬间 target 不瞬降
-   * forward_speed_limit，而是从断崖时 hall 实速按
-   * bypass_near_zone_ramp_deceleration 斜坡降到 forward_speed_limit。
-   * 治 5 档进通道时 DWA 按 0.7 假想速度评分、判死视界乐观 4 倍
-   * 导致的追赶式急转撞对侧。 */
-  bool bypass_near_zone_ramp_enabled;
-  float bypass_near_zone_ramp_deceleration;
   /* V4c(10.08)：F1d 近障锁存判定距离（独立参数）。原与
    * moving_prebrake_profile_far_distance(2.20) 共用，但该参数还喂
    * 距离比例减速 profile，动它会改通道内减速曲线。090443 日志定案：

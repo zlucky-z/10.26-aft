@@ -84,7 +84,6 @@ dwa_local_planner:
     # false = 速度模块整体旁路：前进意图+感知新鲜 ⇒ DWA 直接接管，
     #         速度上限恒为 forward_speed_limit，档位透传原始档；
     #         硬停止/倒车/原地转向走原安全通道。
-    dynamic_velocity_fusion_enabled: false # 是否启用速度融合状态机
 
     # 6.18 版本角度脚区屏蔽：先在左右雷达各自原始扫描角度内处理，再融合到 DWA 栅格。
     # 命中条件只包含扫描角度和距离，不叠加 local_x、车体系坐标或 footprint 判断。
@@ -341,12 +340,6 @@ dwa_local_planner:
     # 近障锁存。治感知单周期闪烁导致的 yo-yo 回冲（cap 瞬回档位峰值→再加速
     # →再断崖）。0=恢复原单周期释放行为。
     bypass_near_zone_release_hold_cycles: 3
-    # V4b(10.08)：F1d 断崖斜坡——进近障区时 target 从断崖瞬间 hall 实速按
-    # 斜坡减速度降到 0.70（不再瞬降）。治 5 档进通道 DWA 按 0.7 假想速度
-    # 评分、判死视界乐观 4 倍导致的追赶式急转撞对侧。指令曲线与实际减速
-    # 同步，实际车速不因此变快，只修正 DWA 认知。关掉=恢复原瞬降行为。
-    bypass_near_zone_ramp_enabled: true
-    bypass_near_zone_ramp_deceleration: 0.40 # 斜坡减速度，单位m/s²（≈电机桥实际减速）
     # V4c(10.08)：F1d 近障锁存判定距离（独立参数，不再与上面距离比例减速的
     # far_distance 2.20 共用）。H2(10.09) 用户定案：前方1.2m内有障碍就进
     # 1档避障（target=0.70），前方净空（净距>1.50，+0.30迟滞且连续3周期

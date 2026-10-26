@@ -61,7 +61,6 @@ void dwa_planner_params_defaults(dwa_planner_params_t *p)
 
   /* 速度模块总开关（A/B 实测用）：默认开=原速度融合状态机；
    * yaml 置 false 后速度模块整体旁路，前进时 DWA 直接接管、恒满速。 */
-  p->dynamic_velocity_fusion_enabled = true;
 
   /* 脚部屏蔽：node_members 默认 */
   p->local_foot_mask_enabled = true;
@@ -200,8 +199,6 @@ void dwa_planner_params_defaults(dwa_planner_params_t *p)
   p->moving_prebrake_profile_zero_distance = 0.40f;
   p->moving_prebrake_recovery_acceleration = 0.40f;
   p->bypass_near_zone_release_hold_cycles = 3;
-  p->bypass_near_zone_ramp_enabled = true;
-  p->bypass_near_zone_ramp_deceleration = 0.40f;
   p->bypass_near_zone_far_distance = 2.20f;
   /* A3(10.09)：释放侧净距门控（板端 yaml 显式覆盖 0.40）。 */
   p->bypass_near_zone_release_side_distance = 0.40f;
@@ -400,7 +397,6 @@ int dwa_planner_params_load(const char *yaml_path, dwa_planner_params_t *p)
   p->rider_filter_cluster_gap = dwa_yaml_get_double(d, "rider_filter_cluster_gap", p->rider_filter_cluster_gap);
   p->rider_filter_preserve_width = dwa_yaml_get_double(d, "rider_filter_preserve_width", p->rider_filter_preserve_width);
   /* 速度模块总开关（A/B 实测用） */
-  p->dynamic_velocity_fusion_enabled = dwa_yaml_get_bool(d, "dynamic_velocity_fusion_enabled", p->dynamic_velocity_fusion_enabled);
 
   /* ---- 脚部屏蔽 ---- */
   p->local_foot_mask_enabled = dwa_yaml_get_bool(d, "local_foot_mask_enabled", p->local_foot_mask_enabled);
@@ -574,8 +570,6 @@ int dwa_planner_params_load(const char *yaml_path, dwa_planner_params_t *p)
   p->moving_prebrake_recovery_acceleration = dwa_max0(dwa_yaml_get_double(d, "moving_prebrake_recovery_acceleration", p->moving_prebrake_recovery_acceleration));
   p->bypass_near_zone_release_hold_cycles = dwa_yaml_get_int(d, "bypass_near_zone_release_hold_cycles", p->bypass_near_zone_release_hold_cycles);
   if (p->bypass_near_zone_release_hold_cycles < 0) p->bypass_near_zone_release_hold_cycles = 0;
-  p->bypass_near_zone_ramp_enabled = dwa_yaml_get_bool(d, "bypass_near_zone_ramp_enabled", p->bypass_near_zone_ramp_enabled);
-  p->bypass_near_zone_ramp_deceleration = dwa_max0(dwa_yaml_get_double(d, "bypass_near_zone_ramp_deceleration", p->bypass_near_zone_ramp_deceleration));
   p->bypass_near_zone_far_distance = dwa_max0(dwa_yaml_get_double(d, "bypass_near_zone_far_distance", p->bypass_near_zone_far_distance));
   p->bypass_near_zone_release_side_distance = dwa_max0(dwa_yaml_get_double(d, "bypass_near_zone_release_side_distance", p->bypass_near_zone_release_side_distance));
   p->moving_dwa_speed_limit = dwa_yaml_get_double(d, "moving_dwa_speed_limit", p->moving_dwa_speed_limit);

@@ -520,31 +520,13 @@ void dwa_node_tick(dwa_node_t *node)
   dynamic_input.restore_pose_stable =
     fabsf(intent.w) <= dc->speed_restore_max_yawrate &&
     fabsf(hand_intent.w) <= dc->speed_restore_max_yawrate;
-  if (p->dynamic_velocity_fusion_enabled) {
-    raw_decision = dwa_dynamic_velocity_fusion_update(
-      &node->dynamic_fusion, &dynamic_input);
-  } else {
-    /* 9.27 A/B 实测开关：速度模块整体旁路（yaml dynamic_velocity_fusion_enabled: false）。
-     * 前进意图+感知新鲜 ⇒ DWA 直接接管；速度上限恒为 forward_speed_limit，
-     * 无预减速/净距锁存/比例减速；档位透传控制器原始档。硬停止锁存、
-     * 倒车、无前进分量的原地转向仍走原有安全通道（takeover=false 时
-     * 手柄路径不变）。 */
+  {
+    /* 前进避障的唯一速度决策链是 DWA。这里仅维护 1.2m 近障档位锁存，
+     * 不再允许 PREBRAKE/HOLD/距离比例减速状态机插入 DWA 之前。 */
     raw_decision = dwa_dynamic_velocity_decision_default();
     raw_decision.mode = DYNAMIC_CONTROL_MOVING_DWA;
-    /* F1d(9.27)：速度目标策略。【H1(10.09) 修订：空旷态档位峰值已废除，
-     * MOVING_DWA 期间 target 恒 forward_speed_limit(0.70)，全档位避障
-     * 等效 1 档——见下方 H1 注释块与 014339 定案。两态描述仅存档。】
-     * - 避障区（前方净距 < far）：target = forward_speed_limit(0.70)，
-     *   即实测验证正确的避障速度，恒定不压零；DWA 评分/绕行/硬停链
-     *   照旧，桥在 0.70 上限内执行 DWA 决策。
-     * - 空旷区（净距 > far+迟滞，或无障碍/净距无效）：target = 档位
-     *   峰值 gear_peak_speeds[raw_gear]，恢复档位原生速度。【已废】
-     * - 迟滞 0.30m 防边界净距噪声导致目标抖动（=反复加减速）。
-     * 已撤销方案教训：F1b max(基线,实速) 是实速棘轮——接管切换瞬间
-     * 原生档速冒头→target 跟着抬高→滑行回落，即加减速振荡（073950
-     * 日志 1.07→0.90 滑行段实锤）；F1c 线性到零曲线在净距<2.2m 即
-     * 压速、≤0.40m 归零，与 DWA 绕行抢速度，避障明显劣化。本方案
-     * 两态均不依赖实速，棘轮与抢速度同时消除。 */
+    /* 速度上限只由有效档位决定：1.2m 锁存时使用一档峰值，释放后
+     * 使用手柄原始档位峰值。具体线速度和角速度由 DWA 每周期规划。 */
     {
       /* V4c(10.08)：近障锁存判定距离改用独立参数 bypass_near_zone_far_distance，
        * 与 moving_prebrake_profile_far_distance(距离比例减速 profile 消费方)
@@ -632,69 +614,7 @@ void dwa_node_tick(dwa_node_t *node)
       if (!node->bypass_near_zone_latched && peak_valid && peak > target) {
         target = peak;
       }
-      /* V4b(10.08)：断崖斜坡——进近障区瞬间 target 不瞬降
-       * forward_speed_limit，而是从断崖时 hall 实速按实际可减速斜率
-       * （默认 0.40 m/s²≈电机桥物理减速）降到 forward_speed_limit。
-       * 根因：cap 骤降后电机桥实际减速仅 ~0.4 m/s²，瞬降期间
-       * (14~18 周期) DWA 仍按 v<=0.7 假想速度评分，判死视界乐观
-       * 4 倍→5 档直行到墙前才追赶式急转(w 1.28)撞对侧。
-       * 斜坡指令与实际减速曲线同步：实际车速不会因此变快（仍受
-       * 电机桥物理限制），只修正 DWA 采样/判死视界的认知。
-       * hall 无效或实速本就 <= 0.70 时不激活，行为与原版一致。
-       * 起点钳到档位峰值以内：维持两态不超档位约束的语义。
-       * A1(10.09)：斜坡改一次性武装（released→latched 边沿后首次
-       * 到达起坡一次，ramp_done 置位后锁存期内不再重挂）。V4b 原版
-       * ramp 落地后下一 tick 只要 hall 实速 >floor 就从实速重新起坡：
-       * target/cap/发布 v 全部跳回实速 → hall 闭环（目标=发布 v，
-       * dwa_node_safety.c hall_speed_control 消息）误差归零永不下压
-       * → 4 档进通道 fb 冲到档位峰值 1.41 起飞（103434 ln=2464-2506
-       * 实锤，0.700→1.287 跳变即重挂）。锁存期间 target 钉死
-       * forward_speed_limit，由 hall 闭环把实速压下来。 */
-      if (node->bypass_near_zone_latched &&
-        dc->bypass_near_zone_ramp_enabled)
-      {
-        const float floor_v = dc->forward_speed_limit;
-        if (!node->bypass_near_zone_ramp_active &&
-          !node->bypass_near_zone_ramp_done)
-        {
-          float start = floor_v;
-          if (dynamic_input.hall_speed_fresh &&
-            isfinite(dynamic_input.actual_forward_speed) &&
-            dynamic_input.actual_forward_speed > floor_v)
-          {
-            start = dynamic_input.actual_forward_speed;
-            if (peak_valid && start > peak) {
-              start = peak;
-            }
-          }
-          node->bypass_near_zone_ramp_target = start;
-          node->bypass_near_zone_ramp_active = (start > floor_v);
-          node->bypass_near_zone_ramp_done = true;
-        }
-        if (node->bypass_near_zone_ramp_active) {
-          const float step = dc->bypass_near_zone_ramp_deceleration *
-            node->config.control_period;
-          float ramped = node->bypass_near_zone_ramp_target - step;
-          if (ramped < floor_v) {
-            ramped = floor_v;
-          }
-          node->bypass_near_zone_ramp_target = ramped;
-          if (ramped > target) {
-            target = ramped;
-          }
-          if (ramped <= floor_v) {
-            node->bypass_near_zone_ramp_active = false;
-          }
-        }
-      } else {
-        node->bypass_near_zone_ramp_active = false;
-        node->bypass_near_zone_ramp_done = false;
-      }
-      /* B1 末端减速已旁路：不能在 DWA 接管前把目标速度按最后一小段
-       * 净距线性压到 0，否则车辆会先停在障碍物前，再失去转弯机会。
-       * 末端安全由 DWA 轨迹碰撞检查和现有硬停止保护负责；
-       * moving_prebrake_profile_zero_distance 保留为兼容配置字段，当前
-       * 旁路分支不再消费它。 */
+      /* 不再做进入一档时的速度斜坡或末端减速；DWA 轨迹直接决定 v/w。 */
       raw_decision.target_max_velocity = target;
       raw_decision.held_forward_speed = target;
     }
@@ -996,7 +916,7 @@ void dwa_node_tick(dwa_node_t *node)
      * 通道指引用原始 intent 更新（colleague 同序，指引不被 SWH 改写）。
      * 速度通道零触碰（SWH 全程只输出角速度）。 */
     plan_intent.w = hand_intent.w;
-    if (!p->dynamic_velocity_fusion_enabled) {
+    {
       plan_intent.v = raw_decision.target_max_velocity;
       /* F1f(9.27)：评分前瞻随两态目标放大，解除 2.0m 目标点钳制。
        * 082953 日志实锤根因：评分目标点 goal_distance =
@@ -1033,8 +953,7 @@ void dwa_node_tick(dwa_node_t *node)
      * 满罚、贴窗顶候选零罚——评分从"原地贴弧最优"翻回"贴窗顶推进
      * 最优"，车保持推进、差速有力、窗口自锁环被打破。松杆/直行/
      * 非锁存逐字节不变（use_speed_cost 基线 false）。 */
-    if (!p->dynamic_velocity_fusion_enabled &&
-      node->bypass_near_zone_latched &&
+    if (node->bypass_near_zone_latched &&
       p->scoring_manual_turn_speed_gain > 0.0f &&
       p->scoring_manual_turn_min_yawrate > 0.0f &&
       fabsf(intent.w) >= p->scoring_manual_turn_min_yawrate &&

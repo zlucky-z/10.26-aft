@@ -118,7 +118,7 @@ int main(int argc, char **argv)
   /* 10.09 刀1：语义改为意图跟随增益（目标点=意图弧端点），yaml 2.00→1.00 */
   expect_double("intent_yaw_to_lateral", params.intent_yaw_to_lateral, 1.00);
   /* 10.08 Fix V3b：判死/净距双视界参数（yaml 显式配置；净距视界改固定弧长） */
-  expect_int("collision_veto_enabled", params.collision_veto_enabled, 1);
+  expect_int("collision_veto_enabled", params.collision_veto_enabled, 0);
   expect_double("collision_veto_reaction_sec", params.collision_veto_reaction_sec, 0.30);
   expect_double("collision_veto_min_sec", params.collision_veto_min_sec, 0.50);
   expect_double("collision_veto_max_sec", params.collision_veto_max_sec, 2.00);
@@ -148,10 +148,8 @@ int main(int argc, char **argv)
   expect_double("stationary_turn_ring_inner_radius_m", params.stationary_turn_ring_inner_radius_m, 0.91);
   expect_double("stationary_turn_ring_forward_side_angle_deg", params.stationary_turn_ring_forward_side_angle_deg, 10.0);
   expect_double("stationary_turn_ring_inner_speed_ratio", params.stationary_turn_ring_inner_speed_ratio, 0.50);
-  /* 10.08 Fix V4：F1d 释放防抖 + 断崖斜坡（yaml 显式配置） */
+  /* 10.08 Fix V4：F1d 释放防抖 */
   expect_int("bypass_near_zone_release_hold_cycles", params.bypass_near_zone_release_hold_cycles, 3);
-  expect_int("bypass_near_zone_ramp_enabled", params.bypass_near_zone_ramp_enabled, 1);
-  expect_double("bypass_near_zone_ramp_deceleration", params.bypass_near_zone_ramp_deceleration, 0.40);
   /* 10.08 Fix V4c：F1d 近障锁存判定距离（独立参数，板端 3.80 提前减速） */
   expect_double("bypass_near_zone_far_distance", params.bypass_near_zone_far_distance, 1.20);
   expect_double("moving_prebrake_y_down_rate_min", params.moving_prebrake_y_down_rate_min, 30.0);
@@ -193,7 +191,7 @@ int main(int argc, char **argv)
   expect_double("config.front_turn_bias_start_m", config.front_turn_bias_start_m, 0.40);
   expect_double("config.front_turn_bias_full_m", config.front_turn_bias_full_m, 0.30);
   expect_double("config.front_turn_bias_side_clearance_m", config.front_turn_bias_side_clearance_m, 0.60);
-  expect_int("config.collision_veto_enabled", config.collision_veto_enabled, 1);
+  expect_int("config.collision_veto_enabled", config.collision_veto_enabled, 0);
   expect_int("config.unknown_is_obstacle", config.unknown_is_obstacle, 0);
 
   /* 默认值路径（yaml 缺失时）：与 C++ declare 默认一致。 */

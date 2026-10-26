@@ -5,7 +5,7 @@ set -eu
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 PROJECT_DIR=${PROJECT_DIR:-$(CDPATH= cd -- "${SCRIPT_DIR}/../.." && pwd)}
-BIN=${ROBOT_MAIN:-${PROJECT_DIR}/bin/robot_main}
+BIN=${ROBOT_MAIN:-${PROJECT_DIR}/robot_main}
 PLANNER_YAML=${PLANNER_YAML:-${PROJECT_DIR}/config/dwa_planner.yaml}
 FILTER_YAML=${FILTER_YAML:-${PROJECT_DIR}/config/lidar_filter.yaml}
 LOG_DIR=${LOG_DIR:-${PROJECT_DIR}/logs}

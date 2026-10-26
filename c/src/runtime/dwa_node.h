@@ -209,17 +209,6 @@ typedef struct {
   /* V4a(10.08)：latch 释放防抖——连续超 release 阈值的周期计数；
    * 任何低于 release 的样本（含迟滞带）清零。 */
   unsigned char bypass_release_count;
-  /* V4b(10.08)：断崖斜坡状态——进近障区时 target 从 hall 实速按
-   * 实际减速度斜坡降到 forward_speed_limit，防 DWA 认知断崖。 */
-  bool bypass_near_zone_ramp_active;
-  float bypass_near_zone_ramp_target;
-  /* A1(10.09)：斜坡一次性武装标志——锁存期内只在首次到达时起坡一次。
-   * V4b 原版 ramp 落地后 ramp_active=false，下一 tick 只要 hall 实速
-   * >floor 就从实速重新起坡：target/cap/发布 v 全部跳回实速 → hall
-   * 闭环（目标=发布 v）误差归零永不下压 → 4 档进通道起飞（103434
-   * ln=2464-2506：fb 0.92→1.41，target 0.700→1.287 跳变即重挂）。
-   * 锁存期间 target 钉死 forward_speed_limit；释放时复位。 */
-  bool bypass_near_zone_ramp_done;
 
   /* ---- Hall 反馈滤波状态（node_input_state） ---- */
   float last_wheel_left_mps;

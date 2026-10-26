@@ -138,8 +138,6 @@ static void assemble_dynamic_config(
   c->moving_prebrake_profile_zero_distance = p->moving_prebrake_profile_zero_distance;
   c->moving_prebrake_recovery_acceleration = p->moving_prebrake_recovery_acceleration;
   c->bypass_near_zone_release_hold_cycles = p->bypass_near_zone_release_hold_cycles;
-  c->bypass_near_zone_ramp_enabled = p->bypass_near_zone_ramp_enabled;
-  c->bypass_near_zone_ramp_deceleration = p->bypass_near_zone_ramp_deceleration;
   c->bypass_near_zone_far_distance = p->bypass_near_zone_far_distance;
   /* A3(10.09)：释放侧净距门控。 */
   c->bypass_near_zone_release_side_distance = p->bypass_near_zone_release_side_distance;

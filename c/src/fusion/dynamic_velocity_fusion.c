@@ -70,8 +70,6 @@ dwa_dynamic_velocity_config_t dwa_dynamic_velocity_config_default(void)
   config.side_target_down_rate = 1.50f;
   config.side_target_up_rate = 0.40f;
   config.bypass_near_zone_release_hold_cycles = 3;
-  config.bypass_near_zone_ramp_enabled = true;
-  config.bypass_near_zone_ramp_deceleration = 0.40f;
   config.bypass_near_zone_far_distance = 2.20f;
   /* A3(10.09)：释放侧净距门控（板端 yaml 覆盖 0.40）。 */
   config.bypass_near_zone_release_side_distance = 0.40f;

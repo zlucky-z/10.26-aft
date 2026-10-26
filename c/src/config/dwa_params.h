@@ -58,7 +58,6 @@ typedef struct {
    * false = 速度模块整体旁路：前进意图+感知新鲜 ⇒ DWA 直接接管，
    *         速度上限恒为 forward_speed_limit（无预减速/锁存/比例减速），
    *         档位透传原始档。硬停止/倒车/原地转向走原安全通道。 */
-  bool dynamic_velocity_fusion_enabled;
 
   /* ---- 脚部角度屏蔽 ---- */
   bool local_foot_mask_enabled;
@@ -188,11 +187,8 @@ typedef struct {
   float moving_prebrake_profile_far_distance;
   float moving_prebrake_profile_zero_distance;
   float moving_prebrake_recovery_acceleration;
-  /* V4(10.08)：F1d 两态 target 的释放防抖与断崖斜坡，见
-   * dynamic_velocity_fusion.h 同名字段注释。 */
+  /* V4(10.08)：F1d 两态 target 的释放防抖。 */
   int bypass_near_zone_release_hold_cycles;
-  bool bypass_near_zone_ramp_enabled;
-  float bypass_near_zone_ramp_deceleration;
   /* V4c(10.08)：F1d 近障锁存判定距离（独立于 prebrake profile 的
    * moving_prebrake_profile_far_distance，避免双消费方互相牵连）。
    * 板端 3.80 提前减速，治 4/5 档减速跑道不足撞对侧。 */
