@@ -22,6 +22,34 @@ static int dwa_max_int(int a, int b) { return a < b ? b : a; }
 static float dwa_min_double(float a, float b) { return b < a ? b : a; }
 static float dwa_max_double(float a, float b) { return a < b ? b : a; }
 
+/* Select the lowest-cost finite candidate, optionally requiring forward
+ * progress.  A zero-speed candidate remains available as the explicit stop
+ * fallback when no finite positive-speed candidate exists. */
+static bool dwa_select_best_candidate(
+  dwa_plan_result_t *result, const dwa_velocity_t *intent,
+  bool require_positive_speed)
+{
+  const dwa_trajectory_t *best = NULL;
+  const float tie_epsilon = 1e-3f;
+
+  for (size_t i = 0; i < result->trajectory_count; ++i) {
+    const dwa_trajectory_t *candidate = &result->trajectories[i];
+    if (!candidate->valid || !isfinite(candidate->total_cost)) continue;
+    if (require_positive_speed && candidate->command.v <= 1e-6f) continue;
+    if (best == NULL || candidate->total_cost < best->total_cost - tie_epsilon ||
+        (fabsf(candidate->total_cost - best->total_cost) <= tie_epsilon &&
+         fabsf(candidate->command.w - intent->w) <
+           fabsf(best->command.w - intent->w) - 1e-6f)) {
+      best = candidate;
+    }
+  }
+
+  if (best == NULL) return false;
+  result->selected = best->command;
+  dwa_trajectory_copy(&result->selected_trajectory, best);
+  return true;
+}
+
 /* ---- 候选评估分片（原循环体提取，字段全只读/独立） ---- */
 typedef struct {
   int begin;
@@ -315,29 +343,26 @@ void dwa_plan_dwa_into(
   }
 
   dwa_normalize_trajectory_costs(result->trajectories, result->trajectory_count, config);
-  /* 9.27 R2 平局偏好修正：候选按 w 升序排列 + 严格小于选优 → 代价
-   * 相等的平局先遍历者胜（w 升序 = 右转候选在前），S 弯实测（054326）
-   * 初始近平局时右 15:7，每次避障起步都偏右。改为：近平局（归一化
-   * 代价差 ≤ tie_eps=1e-3，约 0.1% 量级，不影响真实评分差异的选择）
-   * 时偏向 w 更贴合手柄意图的候选——带转向意图时方向跟手柄，直行时
-   * 自动偏向小转角候选，左右对称不再有遍历顺序偏差。 */
+  /* A forward intent must keep moving whenever a safe positive-speed
+   * candidate exists.  Previously the normalized score could select a
+   * zero-speed arc because it had lower obstacle/goal cost, collapsing the
+   * next dynamic window around the measured near-zero speed. */
   {
-    const float tie_eps = 1e-3f;
-    for (size_t i = 0; i < result->trajectory_count; ++i) {
-      const dwa_trajectory_t *trajectory = &result->trajectories[i];
-      if (!trajectory->valid) continue;
-      const float delta = trajectory->total_cost -
-        result->selected_trajectory.total_cost;
-      if (delta < -tie_eps) {
-        dwa_trajectory_copy(&result->selected_trajectory, trajectory);
-        result->selected = trajectory->command;
-      } else if (delta <= tie_eps &&
-        fabsf(trajectory->command.w - intent.w) <
-          fabsf(result->selected_trajectory.command.w - intent.w) - 1e-6f)
-      {
-        dwa_trajectory_copy(&result->selected_trajectory, trajectory);
-        result->selected = trajectory->command;
-      }
+    const bool forward_progress_requested =
+      intent.v > dwa_max_double(config->min_velocity, 1e-3f);
+    bool selected = dwa_select_best_candidate(
+      result, &intent, forward_progress_requested);
+    if (!selected && forward_progress_requested) {
+      /* No safe forward progress remains: select a finite stop candidate if
+       * one exists.  The caller can then execute the normal zero-speed stop
+       * path without inventing a non-safe velocity. */
+      selected = dwa_select_best_candidate(result, &intent, false);
+    }
+    if (!selected) {
+      result->selected = zero;
+      dwa_generate_trajectory_into(&zero, config, &result->selected_trajectory);
+      result->selected_trajectory.valid = false;
+      result->selected_trajectory.reject_reason = "no_finite_valid_trajectory";
     }
   }
 

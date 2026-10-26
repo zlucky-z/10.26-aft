@@ -131,10 +131,9 @@ dwa_local_planner:
     # 低速转弯候选的最小角速度，来自上游DWA原始采样规则。
     min_yawrate: 0.05 # 非直行候选采用的最小角速度，单位rad/s
     # 线速度加速度限制。越大越容易从低速提升到目标速度。
-    # G2(10.09)：1.00→1.50，窗口顶每 tick +0.15（原 +0.10）——贴停/转弯后
-    # 速度恢复快一半，配合 G1 减少摇摇车"爬→冲"循环的低谷期。判死视界
-    # 不用加速度，风险仅在起步顿挫，实测验证。
-    max_acceleration: 1.50 # DWA线速度最大加速度，单位m/s²
+    # 本轮测试先提高到 3.00：窗口顶每 tick +0.30，帮助车辆从低速
+    # DWA 转弯/停车边缘更快恢复；判死视界仍不使用该加速度值。
+    max_acceleration: 3.00 # DWA线速度最大加速度，单位m/s²
     # 线速度减速度限制。越大越容易快速降速。
     max_deceleration: 1.50 # DWA线速度最大减速度，单位m/s²
     # G1(10.09)：采样窗口下界专用减速度（仅影响候选窗口 v_low，判死视界
@@ -414,13 +413,6 @@ dwa_local_planner:
     side_hard_stop_sweep_brake_sec: 0.25 # 侧边扫掠硬停的制动窗口，单位s
     side_hard_stop_sweep_min_yawrate: 0.15 # 侧边扫掠保护生效的最小角速度，单位rad/s
     # 前方硬停止时，仅在左右至少一侧有足够净距时低速脱困。
-    front_hard_stop_escape_enabled: true # DWA内部硬停止脱困启用
-    radar_contact_distance: 0.065 # D6最小量程饱和判定；仅前方保护区域内不大于该距离时触发前进硬停止，单位m
-    hard_stop_release_clear_cycles: 3 # 硬停止解除前要求连续无硬停止条件的周期数
-    front_hard_stop_escape_min_clearance: 0.10 # 前方硬停允许脱困所需的最小侧向净距，单位m
-    front_hard_stop_escape_linear_speed:  0.00 # DWA内部脱困只输出角速度，线速度固定为0
-    front_hard_stop_escape_yawrate:  0.50 # DWA内部脱困角速度，单位rad/s
-    stop_escape_trigger_sec: 0.00 # DWA内部连续硬停止触发时间，单位s
     near_obstacle_yawrate_limit_enabled: false # 关闭近障碍物时的手动角速度0.70rad/s限幅；侧扫掠保护与硬停止仍生效
     # 普通DWA线速度使用非对称加减速斜坡；急停分支不经过该斜坡。
     dwa_velocity_ramp_enabled: true # 是否启用普通DWA输出速度斜坡

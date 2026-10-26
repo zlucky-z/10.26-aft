@@ -40,10 +40,11 @@ add_executable(test_self_filter_toe_boundary test_self_filter_toe_boundary.c)
 target_link_libraries(test_self_filter_toe_boundary dwa_common m)
 add_test(NAME self_filter_toe_boundary COMMAND test_self_filter_toe_boundary)
 
-# Unified escape gating and bridge-clock wheel-feedback freshness regressions.
-add_executable(test_unified_escape test_unified_escape.c)
-target_link_libraries(test_unified_escape dwa_motor m)
-add_test(NAME unified_escape COMMAND test_unified_escape)
+# Backup predictive_escape_step semantics: stop gate, direction selection,
+# direction priority and duration re-arm.
+add_executable(test_predictive_escape test_predictive_escape.c)
+target_link_libraries(test_predictive_escape dwa_motor m)
+add_test(NAME predictive_escape COMMAND test_predictive_escape)
 
 add_executable(test_side_triangle_stop test_side_triangle_stop.c)
 target_link_libraries(test_side_triangle_stop dwa_safety m)

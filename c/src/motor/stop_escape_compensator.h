@@ -1,9 +1,7 @@
 /*
- * 模块功能：独立脱困补偿：只决定停止且前向指令下的原地转向，
- * 不评估轨迹、不改 DWA、不改感知。
- * 直译自 motor_bridge_cpp/native/stop_escape_compensator.hpp
- * （namespace hu_m40_stop_escape → se_ 前缀）。保持 double 运算。
- * 方向字符串 "NONE"/"LEFT"/"RIGHT" → 枚举（无拼接语义，等价）。
+ * 独立脱困模块：移植备份版 predictive_escape_step 的状态与输出语义。
+ * 该模块只在前进手柄意图、DWA 本拍无有效路径且车辆停稳时输出 v=0 的
+ * 原地转向；DWA 恢复路径后立即交还。输入点云来自当前统一融合后的点云。
  */
 #ifndef DWA_STOP_ESCAPE_COMPENSATOR_H
 #define DWA_STOP_ESCAPE_COMPENSATOR_H
@@ -23,15 +21,11 @@ typedef enum {
 typedef struct {
   int active;
   int command_enabled;
-  int yield_to_dwa;
   double yawrate;
   se_direction_t direction;
   double left_clearance;
   double right_clearance;
-  const char *reason; /* conditions_not_met / waiting_stop_hold /
-                         no_safe_side / escaping / paused_cloud_stale /
-                         selected_side_blocked / manual_turn_takeover /
-                         escape_locked_out / duration_limit / recovered */
+  const char *reason;
 } se_stop_escape_decision_t;
 
 typedef struct {
@@ -40,40 +34,31 @@ typedef struct {
 } se_point_t;
 
 typedef struct {
-  /* 构造参数（经 clamp 后不变） */
   double stop_hold_sec;
   double stop_speed;
   double yawrate;
   double cloud_timeout;
   double half_width;
   double max_duration_sec;
-  double tie_margin;
-  double forward_min_x;
-  double forward_max_x;
-  double max_lateral;
-  /* 状态 */
+  double rear_x;
+  double front_x;
+  double footrest_front_x;
+  double footrest_half_width;
+  double triangle_gap;
+  double stop_gap;
   double cloud_time;
   double left_clearance;
   double right_clearance;
-  se_direction_t front_obstacle_away_direction;
-  double stop_since;
-  double started_at;
-  double recovery_since;
-  double forward_command_since;
-  double handoff_since;
-  double forward_motion_since;
-  int handoff_active;
-  int inhibited_until_rearm;
-  int stop_while_locked_out;
-  se_direction_t direction;
-  se_direction_t last_direction;
-  int active;
+  int left_hit;
+  int right_hit;
+  double total_ticks;
+  double settle_tick;
+  double escape_yawrate;
+  int session;
+  int giveup;
+  int joy_reset;
 } se_stop_escape_compensator_t;
 
-/*
- * 构造（对齐 C++ 默认实参版本；bridge 传入 escape_* 配置）。
- * 构造体内对参数做 std::max / std::abs 钳制。
- */
 void se_stop_escape_compensator_init(
   se_stop_escape_compensator_t *c,
   double stop_hold_sec, double stop_speed, double yawrate,
@@ -85,29 +70,18 @@ void se_stop_escape_compensator_update_cloud(
   se_stop_escape_compensator_t *c, const se_point_t *points, size_t count,
   double now);
 
+se_stop_escape_decision_t se_stop_escape_compensator_step(
+  se_stop_escape_compensator_t *c,
+  double now,
+  double joy_v,
+  double joy_w,
+  double left_mps,
+  double right_mps,
+  double w_max,
+  int has_path);
+
 se_direction_t se_stop_escape_compensator_choose_direction(
   const se_stop_escape_compensator_t *c);
-
-se_stop_escape_decision_t se_stop_escape_compensator_update(
-  se_stop_escape_compensator_t *c,
-  double now,
-  int controller_neutral,
-  int forward_intent,
-  int vehicle_stopped,
-  int normal_output_stopped,
-  int positive_dwa_command,
-  int positive_forward_motion);
-
-se_stop_escape_decision_t se_stop_escape_compensator_update_with_turn(
-  se_stop_escape_compensator_t *c,
-  double now,
-  int controller_neutral,
-  int forward_intent,
-  int vehicle_stopped,
-  int normal_output_stopped,
-  int positive_dwa_command,
-  int positive_forward_motion,
-  se_direction_t manual_turn_direction);
 
 double se_stop_escape_compensator_left_clearance(
   const se_stop_escape_compensator_t *c);

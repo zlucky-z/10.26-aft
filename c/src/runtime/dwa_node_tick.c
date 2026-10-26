@@ -51,9 +51,10 @@ static const char *const kKeyControllerPriority = "dnt:controller_priority";
  */
 static bool dnt_select_intent_direction_trajectory(
   dwa_plan_result_t *result, const dwa_config_t *config,
-  float intent_w, float direction_epsilon)
+  float intent_v, float intent_w, float direction_epsilon)
 {
   const int desired_direction = dwa_turn_direction(intent_w, direction_epsilon);
+  const bool require_positive_speed = intent_v > 1e-3f;
   const dwa_trajectory_t *best = NULL;
   const float tie_epsilon = 1e-4f;
 
@@ -65,7 +66,9 @@ static bool dnt_select_intent_direction_trajectory(
     const dwa_trajectory_t *candidate = &result->trajectories[i];
     const int candidate_direction = dwa_turn_direction(
       candidate->command.w, direction_epsilon);
-    if (!candidate->valid || candidate_direction != desired_direction) {
+    if (!candidate->valid || !isfinite(candidate->total_cost) ||
+        (require_positive_speed && candidate->command.v <= 1e-6f) ||
+        candidate_direction != desired_direction) {
       continue;
     }
     if (best == NULL || candidate->total_cost < best->total_cost - tie_epsilon ||
@@ -83,7 +86,8 @@ static bool dnt_select_intent_direction_trajectory(
     return true;
   }
 
-  /* 同向没有安全轨迹时停车；不能保留评分阶段已经选出的反向轨迹。 */
+  /* 同向没有安全正速度轨迹时停车；不能保留评分阶段已经选出的
+   * 反向或零速原地轨迹。 */
   {
     const dwa_velocity_t zero = {0.0f, 0.0f};
     result->selected = zero;
@@ -982,7 +986,7 @@ void dwa_node_tick(dwa_node_t *node)
   if (controller_priority_active) {
     const bool same_direction_available =
       dnt_select_intent_direction_trajectory(
-        result, &planning_config, intent.w, p->deadband_angular);
+        result, &planning_config, intent.v, intent.w, p->deadband_angular);
     hal_log_throttle(hal_steady_now_sec(), 250,
       kKeyControllerPriority,
       same_direction_available ? HAL_LOG_INFO : HAL_LOG_WARN,

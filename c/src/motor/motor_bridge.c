@@ -197,7 +197,6 @@ static int mb_read_float(const uint8_t *p, int size, int big_endian,
 static se_point_t *g_escape_points = NULL;
 static size_t g_escape_points_cap = 0;
 
-static void mb_reset_escape_yaw_control(mb_bridge_t *b);
 
 static se_point_t *escape_points_reserve(size_t count)
 {
@@ -245,7 +244,6 @@ int mb_bridge_init(mb_bridge_t *b, const mb_config_t *config_in,
     config->escape_stop_hold_sec, config->escape_stop_speed,
     config->escape_turn_yawrate, config->escape_cloud_timeout,
     config->escape_half_width);
-  b->stop_escape.max_duration_sec = config->escape_max_duration_sec;
   mc_hall_speed_controller_init(&b->hall_speed_controller,
     config->hall_speed_y_gain, config->hall_speed_y_down_rate,
     config->hall_speed_y_up_rate, config->hall_speed_deadband,
@@ -320,21 +318,12 @@ int mb_bridge_init(mb_bridge_t *b, const mb_config_t *config_in,
   b->stop_escape_last_decision.left_clearance = INFINITY;
   b->stop_escape_last_decision.right_clearance = INFINITY;
   b->stop_escape_last_decision.reason = "";
+  b->stop_escape_last_step_time = 0.0;
   b->stop_escape_event_count = 0;
   b->stop_escape_event_active = 0;
-  b->dwa_escape_request = 0;
-  b->dwa_escape_request_time = 0.0;
   b->escape_imu_yaw_rate = 0.0;
   b->escape_imu_time = 0.0;
   b->escape_imu_valid = 0;
-  b->escape_yaw_integral = 0.0;
-  b->escape_yaw_output = 0.0;
-  b->escape_yaw_direction = SE_DIRECTION_NONE;
-  b->escape_yaw_diag_target = 0.0;
-  b->escape_yaw_diag_actual = 0.0;
-  b->escape_yaw_diag_output = 0.0;
-  b->escape_yaw_last_update_time = 0.0;
-  b->escape_last_diag_log_time = 0.0;
 
   /* 发布器开关（topic 非空 = publisher 存在） */
   b->controller_cmd_pub = (config->controller_cmd_topic[0] != '\0');
@@ -604,12 +593,6 @@ void mb_on_escape_cloud(mb_bridge_t *b, const mb_cloud_view_t *cloud)
     }
     se_stop_escape_compensator_update_cloud(&b->stop_escape, points, count, now);
   }
-}
-
-void mb_on_escape_request(mb_bridge_t *b, int requested)
-{
-  b->dwa_escape_request = requested ? 1 : 0;
-  b->dwa_escape_request_time = requested ? mb_now(b) : 0.0;
 }
 
 void mb_on_escape_imu_yawrate(mb_bridge_t *b, double yawrate, int valid)
@@ -1047,10 +1030,6 @@ void mb_clear_motion_state_for_controller_neutral(mb_bridge_t *b)
   mc_prebrake_stop_controller_reset(&b->prebrake_stop_controller);
   mb_reset_closed_loop_state(b);
   mb_reset_intervention_slew_state(b);
-  se_stop_escape_compensator_reset(&b->stop_escape);
-  b->dwa_escape_request = 0;
-  b->dwa_escape_request_time = 0.0;
-  mb_reset_escape_yaw_control(b);
   b->stop_escape_last_decision.active = 0;
   b->stop_escape_last_decision.command_enabled = 0;
   b->stop_escape_last_decision.yawrate = 0.0;
@@ -1058,6 +1037,7 @@ void mb_clear_motion_state_for_controller_neutral(mb_bridge_t *b)
   b->stop_escape_last_decision.left_clearance = INFINITY;
   b->stop_escape_last_decision.right_clearance = INFINITY;
   b->stop_escape_last_decision.reason = "";
+  b->stop_escape_last_step_time = 0.0;
   b->stop_escape_event_active = 0;
 }
 
@@ -1688,116 +1668,110 @@ static int mb_physical_forward_intent(mb_bridge_t *b, double now)
   return dy > 0.0;
 }
 
-static void mb_reset_escape_yaw_control(mb_bridge_t *b)
+static double mb_predictive_escape_w_max(mb_bridge_t *b)
 {
-  b->escape_yaw_integral = 0.0;
-  b->escape_yaw_output = 0.0;
-  b->escape_yaw_direction = SE_DIRECTION_NONE;
-  b->escape_yaw_diag_target = 0.0;
-  b->escape_yaw_diag_actual = 0.0;
-  b->escape_yaw_diag_output = 0.0;
-  b->escape_yaw_last_update_time = 0.0;
+  /* Exact backup robot_main spend_threshold_W_TAB, indexed by the effective
+   * controller gear that the Hall message published for this command. */
+  static const double backup_w_max_by_gear[] = {
+    1.00, 1.14, 1.32, 1.45, 1.65
+  };
+  const int gear = mb_current_output_gear(b);
+  if (gear >= 1 && gear <= (int)(sizeof(backup_w_max_by_gear) /
+      sizeof(backup_w_max_by_gear[0]))) {
+    return backup_w_max_by_gear[gear - 1];
+  }
+  return b->config.max_turn_speed;
 }
 
-static double mb_escape_yaw_command(mb_bridge_t *b,
-  se_direction_t direction, double now)
+static void mb_predictive_escape_motion_to_xy(mb_bridge_t *b,
+  double angular, int *out_x, int *out_y)
 {
-  const int imu_fresh = b->escape_imu_valid && b->escape_imu_time > 0.0 &&
-    now >= b->escape_imu_time && now - b->escape_imu_time <= 0.25;
-  const double sign = direction == SE_DIRECTION_LEFT ? 1.0 : -1.0;
-  const double target = sign * fabs(b->config.escape_turn_yawrate);
-  double output = target;
-  double dt = b->escape_yaw_last_update_time > 0.0 ?
-    now - b->escape_yaw_last_update_time : 0.0;
+  double turn_ratio;
+  double x;
+  const double max_turn = mb_predictive_escape_w_max(b);
 
-  if (b->escape_yaw_direction != direction) {
-    mb_reset_escape_yaw_control(b);
-    b->escape_yaw_direction = direction;
-    dt = 0.0;
+  /* Keep the bridge's existing protocol direction/deadzone mapping, but use
+   * the backup version's active-gear angular scale for this escape command. */
+  *out_y = MP_CENTER;
+  b->output_turn_deadzone_has_info = 0;
+  turn_ratio = mp_clamp_double(fabs(angular) /
+    (max_turn > 1e-6 ? max_turn : 1e-6), 0.0, 1.0);
+  if (fabs(angular) < b->config.angular_deadband) {
+    *out_x = MP_CENTER;
+    return;
   }
-  if (dt < 0.0 || dt > 0.10) dt = 0.0;
-  b->escape_yaw_last_update_time = now;
-  b->escape_yaw_diag_target = target;
-  b->escape_yaw_diag_actual = imu_fresh ? b->escape_imu_yaw_rate : 0.0;
-
-  if (imu_fresh) {
-    const double error = target - b->escape_imu_yaw_rate;
-    const double kp = 0.80;
-    const double ki = 0.35;
-    const double integral_limit = 0.25;
-    const double output_limit = 0.90;
-    double wanted;
-    b->escape_yaw_integral += ki * error * dt;
-    b->escape_yaw_integral = mp_clamp_double(
-      b->escape_yaw_integral, -integral_limit, integral_limit);
-    wanted = target + kp * error + b->escape_yaw_integral;
-    wanted = mp_clamp_double(wanted, -output_limit, output_limit);
-    /* Bound output slew so newly accumulated compensation cannot release as a jerk. */
-    if (dt > 0.0 && b->escape_yaw_output != 0.0) {
-      const double max_step = 2.0 * dt;
-      output = b->escape_yaw_output +
-        mp_clamp_double(wanted - b->escape_yaw_output, -max_step, max_step);
-    } else {
-      output = wanted;
-    }
+  if (angular > 0.0) {
+    x = (double)b->config.output_turn_dead_high + turn_ratio *
+      (200.0 - (double)b->config.output_turn_dead_high);
   } else {
-    /* Invalid/stale IMU clears compensation immediately; retain only the safe base turn. */
-    b->escape_yaw_integral = 0.0;
-    output = target;
+    x = (double)b->config.output_turn_dead_low - turn_ratio *
+      (double)b->config.output_turn_dead_low;
   }
-  b->escape_yaw_output = output;
-  b->escape_yaw_diag_output = output;
-  if (now - b->escape_last_diag_log_time >= 0.20) {
-    hal_log(HAL_LOG_INFO,
-      "escape_yaw direction=%s imu_valid=%d target=%+.3f actual=%+.3f "
-      "integral=%+.3f output=%+.3f",
-      direction == SE_DIRECTION_LEFT ? "LEFT" : "RIGHT",
-      imu_fresh, target, b->escape_yaw_diag_actual,
-      b->escape_yaw_integral, output);
-    b->escape_last_diag_log_time = now;
-  }
-  return output;
+  b->output_turn_deadzone_info.angular = angular;
+  b->output_turn_deadzone_info.ratio = turn_ratio;
+  b->output_turn_deadzone_info.x = mp_clamp_coord(x);
+  b->output_turn_deadzone_has_info = 1;
+  *out_x = b->output_turn_deadzone_info.x;
 }
 
 se_stop_escape_decision_t mb_update_stop_escape(mb_bridge_t *b, double now,
   int controller_neutral_stop, int normal_output_stopped)
 {
   const int physical_forward = mb_physical_forward_intent(b, now);
-  const double controller_turn = mb_controller_turn_ratio(b,
-    b->last_controller_x);
-  const se_direction_t manual_turn_direction = controller_turn > 0.0
-    ? SE_DIRECTION_LEFT : (controller_turn < 0.0
-      ? SE_DIRECTION_RIGHT : SE_DIRECTION_NONE);
-  const int dwa_request_fresh = b->dwa_escape_request &&
-    b->dwa_escape_request_time > 0.0 &&
-    now >= b->dwa_escape_request_time &&
-    now - b->dwa_escape_request_time <= 0.25;
-  const int wheel_feedback_fresh = mb_wheel_feedback_is_fresh(b, now);
-  const int vehicle_stopped = wheel_feedback_fresh &&
-    fabs(b->actual_linear) <= b->config.escape_stop_speed;
-  const int positive_dwa_command = b->last_cmd_time > 0.0 &&
-    now >= b->last_cmd_time &&
-    now - b->last_cmd_time <= b->config.cmd_timeout &&
-    b->last_linear > b->config.linear_deadband;
-  const int positive_forward_motion = wheel_feedback_fresh &&
-    b->actual_linear > b->config.escape_stop_speed;
-  /* Keep the maneuver latched from physical controller intent. The DWA
-   * request/fallback trigger can flicker as outputs and feedback change; that
-   * trigger is for event attribution, not the ongoing escape-enable signal.
-   * Initial activation still requires stopped wheels and stopped normal output
-   * inside the compensator, so this cannot take over ordinary movement. */
-  b->stop_escape_last_decision = se_stop_escape_compensator_update_with_turn(
-    &b->stop_escape, now, controller_neutral_stop, physical_forward,
-    vehicle_stopped, normal_output_stopped, positive_dwa_command,
-    positive_forward_motion, manual_turn_direction);
+  const double joy_v = b->last_raw_linear;
+  const double joy_w = b->last_raw_angular;
+  /* predictive_escape_step receives the DWA command before Hall conversion.
+   * A zero command is the only no-path trigger; reverse/manual motion remains
+   * a path and therefore cannot start this forward escape module. */
+  const int has_path = !(b->last_linear == 0.0 && b->last_angular < 0.40);
+
+  if (controller_neutral_stop || !physical_forward) {
+    /* predictive_escape_step is not called outside the forward branch in the
+     * backup robot_main.  Clear only this cycle's output; do not reset the
+     * module state, otherwise giveup->neutral->forward re-arm semantics are
+     * lost. */
+    if (controller_neutral_stop && b->stop_escape.giveup) {
+      /* The backup function observes a neutral joystick while waiting for
+       * re-arm.  Feed that state transition to the module, but keep the
+       * bridge's independent neutral hard-stop output. */
+      (void)se_stop_escape_compensator_step(
+        &b->stop_escape, now, 0.0, 0.0,
+        b->wheel_left_mps, b->wheel_right_mps,
+        mb_predictive_escape_w_max(b), 0);
+    }
+    memset(&b->stop_escape_last_decision, 0,
+      sizeof(b->stop_escape_last_decision));
+    b->stop_escape_last_decision.direction = SE_DIRECTION_NONE;
+    b->stop_escape_last_decision.left_clearance =
+      se_stop_escape_compensator_left_clearance(&b->stop_escape);
+    b->stop_escape_last_decision.right_clearance =
+      se_stop_escape_compensator_right_clearance(&b->stop_escape);
+    b->stop_escape_last_decision.reason = "conditions_not_met";
+    b->stop_escape_event_active = 0;
+    b->stop_escape_last_step_time = 0.0;
+    return b->stop_escape_last_decision;
+  }
+
+  /* The backup implementation was called by the 10 Hz planner loop.  The
+   * bridge timer is 20 ms, so preserve its original one-tick-per-100ms rate
+   * while replaying the last decision between planner ticks. */
+  if (b->stop_escape_last_step_time > 0.0 &&
+      now - b->stop_escape_last_step_time < 0.095 && !has_path) {
+    return b->stop_escape_last_decision;
+  }
+  b->stop_escape_last_step_time = now;
+
+  b->stop_escape_last_decision = se_stop_escape_compensator_step(
+    &b->stop_escape, now, joy_v, joy_w,
+    b->wheel_left_mps, b->wheel_right_mps,
+    mb_predictive_escape_w_max(b), has_path);
   if (b->stop_escape_last_decision.active &&
       !b->stop_escape_event_active) {
     ++b->stop_escape_event_count;
     hal_log(HAL_LOG_WARN,
-      "脱困统计 source=unified_escape event=%llu trigger=%s direction=%s "
+      "脱困统计 source=predictive_escape event=%llu direction=%s "
       "side_clear(L=%.3f,R=%.3f)",
       (unsigned long long)b->stop_escape_event_count,
-      dwa_request_fresh ? "dwa_request" : "motor_bridge_stall",
       b->stop_escape_last_decision.direction == SE_DIRECTION_LEFT ?
         "LEFT" : "RIGHT",
       b->stop_escape_last_decision.left_clearance,
@@ -1805,17 +1779,7 @@ se_stop_escape_decision_t mb_update_stop_escape(mb_bridge_t *b, double now,
   }
   b->stop_escape_event_active =
     b->stop_escape_last_decision.active ? 1 : 0;
-  if (b->stop_escape_last_decision.active &&
-      b->stop_escape_last_decision.command_enabled) {
-    b->stop_escape_last_decision.yawrate = mb_escape_yaw_command(
-      b, b->stop_escape_last_decision.direction, now);
-  } else if (b->stop_escape_last_decision.active) {
-    /* Pause compensator while retaining the escape latch. */
-    mb_reset_escape_yaw_control(b);
-    b->stop_escape_last_decision.yawrate = 0.0;
-  } else {
-    mb_reset_escape_yaw_control(b);
-  }
+  (void)normal_output_stopped;
   return b->stop_escape_last_decision;
 }
 
@@ -1889,9 +1853,6 @@ void mb_on_timer(mb_bridge_t *b)
     if (sensor_fault_mask != 0) {
       /* A stale sensor must not let the DWA escape controller or manual
        * bypass emit motion. Clear escape state so recovery cannot replay it. */
-      se_stop_escape_compensator_reset(&b->stop_escape);
-      b->dwa_escape_request = 0;
-      b->dwa_escape_request_time = 0.0;
       b->stop_escape_event_active = 0;
       b->stop_escape_last_decision.active = 0;
       b->stop_escape_last_decision.command_enabled = 0;
@@ -1907,15 +1868,11 @@ void mb_on_timer(mb_bridge_t *b)
         controller_neutral_stop, normal_output_stopped);
     }
   }
-  if (stop_escape_decision.active && stop_escape_decision.yield_to_dwa) {
-    /* Trial handoff: preserve this timer's normal DWA output. The escape
-     * module retains its event/direction and will resume if motion fails. */
-    state_set(state, "stop_escape_handoff");
-  } else if (stop_escape_decision.active && stop_escape_decision.command_enabled) {
+  if (stop_escape_decision.active && stop_escape_decision.command_enabled) {
     double escape_angular = stop_escape_decision.yawrate;
     int ex, ey;
     if (b->config.invert_angular) escape_angular = -escape_angular;
-    mb_motion_to_xy(b, 0.0, escape_angular, &ex, &ey);
+    mb_predictive_escape_motion_to_xy(b, escape_angular, &ex, &ey);
     x = ex;
     y = ey;
     state_set(state, "stop_escape");
@@ -2032,16 +1989,13 @@ void mb_on_timer(mb_bridge_t *b)
     const double wheel_age = b->last_wheel_feedback_time > 0.0
       ? now - b->last_wheel_feedback_time : -1.0;
     const int physical_forward = mb_physical_forward_intent(b, now);
-    const int dwa_request_fresh = b->dwa_escape_request &&
-      b->dwa_escape_request_time > 0.0 && now >= b->dwa_escape_request_time &&
-      now - b->dwa_escape_request_time <= 0.25;
     int tx_age_ms = -1;
     mp_frame_hex(&frame, hex);
     if (b->tx_last_time > 0.0 && now >= b->tx_last_time) {
       tx_age_ms = (int)((now - b->tx_last_time) * 1000.0);
     }
     hal_log(HAL_LOG_INFO,
-      "motor_chain t=%.3f ctrl=(%d,%d) ctrl_age=%.3f neutral=%d raw=(%.3f,%+.3f) raw_age=%.3f dwa=(%.3f,%+.3f) cmd_age=%.3f hard_stop=%d hall=(active:%d mode:%d target:%.3f age:%.3f fault:%d) wheel=(L:%.3f R:%.3f v:%.3f age:%.3f) escape=(fwd:%d dwa_req:%d pending:%d active:%d cmd:%d dir:%s reason:%s yaw:%+.3f clear:(%.3f,%.3f)) bridge=(state:%s xy:%d,%d write:%d reason:%s) frame=%s port=%s baud=%d fd=%d dry=%d feedback=(online:%d age:%.3f seen:%d) rx=(bytes:%ld frames:%ld drive:%ld status:%ld bad_crc:%ld dropped:%ld) tx=(ret:%ld errno:%d age_ms:%d attempts:%llu full:%llu fail:%llu)",
+      "motor_chain t=%.3f ctrl=(%d,%d) ctrl_age=%.3f neutral=%d raw=(%.3f,%+.3f) raw_age=%.3f dwa=(%.3f,%+.3f) cmd_age=%.3f hard_stop=%d hall=(active:%d mode:%d target:%.3f age:%.3f fault:%d) wheel=(L:%.3f R:%.3f v:%.3f age:%.3f) escape=(fwd:%d active:%d cmd:%d dir:%s reason:%s yaw:%+.3f clear:(%.3f,%.3f)) bridge=(state:%s xy:%d,%d write:%d reason:%s) frame=%s port=%s baud=%d fd=%d dry=%d feedback=(online:%d age:%.3f seen:%d) rx=(bytes:%ld frames:%ld drive:%ld status:%ld bad_crc:%ld dropped:%ld) tx=(ret:%ld errno:%d age_ms:%d attempts:%llu full:%llu fail:%llu)",
       hal_steady_now_sec(), b->last_controller_x, b->last_controller_y,
       ctrl_age, controller_neutral_stop, b->last_raw_linear,
       b->last_raw_angular, raw_age, b->last_linear, b->last_angular,
@@ -2049,8 +2003,8 @@ void mb_on_timer(mb_bridge_t *b)
       b->hall_speed_control_mode, b->hall_speed_control_target, hall_age,
       b->hall_speed_fault_wait_neutral, b->wheel_left_mps,
       b->wheel_right_mps, b->actual_linear, wheel_age, physical_forward,
-      dwa_request_fresh, b->dwa_escape_request,
-      stop_escape_decision.active, stop_escape_decision.command_enabled,
+      stop_escape_decision.active,
+      stop_escape_decision.command_enabled,
       stop_escape_decision.direction == SE_DIRECTION_LEFT ? "LEFT" :
         (stop_escape_decision.direction == SE_DIRECTION_RIGHT ? "RIGHT" : "NONE"),
       stop_escape_decision.reason != NULL ? stop_escape_decision.reason : "",

@@ -135,6 +135,7 @@ typedef struct mb_bridge_t {
   ms_serial_writer_t writer;
   se_stop_escape_compensator_t stop_escape;
   se_stop_escape_decision_t stop_escape_last_decision;
+  double stop_escape_last_step_time;
   /* 电机桥兜底脱困事件统计：按 active 的上升沿计数。 */
   uint64_t stop_escape_event_count;
   int stop_escape_event_active;
@@ -155,19 +156,9 @@ typedef struct mb_bridge_t {
   int sensor_fault_last_mask;
   double last_valid_imu_time;
   int valid_imu_seen;
-  int dwa_escape_request;
-  double dwa_escape_request_time;
   double escape_imu_yaw_rate;
   double escape_imu_time;
   int escape_imu_valid;
-  double escape_yaw_integral;
-  double escape_yaw_output;
-  se_direction_t escape_yaw_direction;
-  double escape_yaw_diag_target;
-  double escape_yaw_diag_actual;
-  double escape_yaw_diag_output;
-  double escape_yaw_last_update_time;
-  double escape_last_diag_log_time;
   mc_hall_speed_controller_t hall_speed_controller;
   mc_moving_hold_controller_t moving_hold_controller;
   mc_prebrake_stop_controller_t prebrake_stop_controller;
@@ -277,7 +268,6 @@ void mb_on_cmd(mb_bridge_t *b, double linear_x, double angular_z);
 void mb_on_hall_speed_control(mb_bridge_t *b, const float *data,
   size_t data_size);
 void mb_on_escape_cloud(mb_bridge_t *b, const mb_cloud_view_t *cloud);
-void mb_on_escape_request(mb_bridge_t *b, int requested);
 void mb_on_escape_imu_yawrate(mb_bridge_t *b, double yawrate, int valid);
 void mb_bridge_enable_sensor_interlock(mb_bridge_t *b, int enabled);
 void mb_on_left_scan(mb_bridge_t *b);

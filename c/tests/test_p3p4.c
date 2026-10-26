@@ -537,41 +537,9 @@ static void run_safety(int scenarios)
       const planner_manual_turn_direction_t dir2 =
         dwa_manual_turn_direction_with_reverse(&intent, &turn_cfg, &ang2);
 
-      planner_side_clearance_diagnostics_t clearance =
-        planner_side_clearance_diagnostics_default();
-      const int bucket_l = (int)(rng_unit() * 4.0);
-      const double val_l = rng_unit();
-      if (bucket_l == 0) {
-        clearance.left = 0.30 * val_l;
-      } else if (bucket_l == 1) {
-        clearance.left = 0.30 + 2.0 * val_l;
-      } else if (bucket_l == 2) {
-        clearance.left = INFINITY;
-      } else {
-        clearance.left = NAN;
-      }
-      const int bucket_r = (int)(rng_unit() * 4.0);
-      const double val_r = rng_unit();
-      if (bucket_r == 0) {
-        clearance.right = 0.30 * val_r;
-      } else if (bucket_r == 1) {
-        clearance.right = 0.30 + 2.0 * val_r;
-      } else if (bucket_r == 2) {
-        clearance.right = INFINITY;
-      } else {
-        clearance.right = NAN;
-      }
-      const bool esc_enabled = rng_unit() < 0.90;
-      const double esc_threshold = 0.30 * rng_unit();
-      const dwa_front_escape_decision_t esc =
-        dwa_choose_hard_stop_escape_direction(&clearance, esc_enabled,
-          esc_threshold);
-
-      fprintf(g_out, "se,%d,%d,%.17g,%.17g,%.17g,%.17g,%d,%d,%.17g,%d,%d,%d\n",
+      fprintf(g_out, "se,%d,%d,%.17g,%.17g,%.17g,%.17g,%d,%d,0,0,0,0\n",
         s, t, intent.v, intent.w, ang1, ang2,
-        (int)dir1, (int)dir2,
-        esc_threshold, esc_enabled ? 1 : 0,
-        esc.allowed ? 1 : 0, (int)esc.direction);
+        (int)dir1, (int)dir2);
 
       /* --- side_safety: evaluate_side_hard_stop_circle --- */
       dwa_velocity_t intent2;

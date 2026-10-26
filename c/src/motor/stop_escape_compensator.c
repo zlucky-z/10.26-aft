@@ -1,373 +1,229 @@
-/*
- * 模块功能：stop_escape_compensator.h 对应实现
- * （stop_escape_compensator.hpp 直译）。
- */
+/* predictive_FNC.c::predictive_escape_step 的米制/模块接口移植。
+ * 这里仅做 Point2D/单位/调用接口适配；判断顺序和常量语义保持备份版。 */
 #include "stop_escape_compensator.h"
 
 #include <math.h>
+#include <string.h>
 
-/* tie_margin/forward_min_x/forward_max_x/max_lateral 使用 C++ 构造默认值
- * （bridge 侧只传 5 个参数，其余走默认实参 0.03 / -0.20 / 1.20 / 1.20）。 */
-#define SE_DEFAULT_TIE_MARGIN 0.03
-#define SE_DEFAULT_FORWARD_MIN_X (-0.20)
-#define SE_DEFAULT_FORWARD_MAX_X 1.20
-#define SE_DEFAULT_MAX_LATERAL 1.20
-#define SE_ESCAPE_SIDE_MIN_CLEARANCE 0.03
-#define SE_DEFAULT_MAX_DURATION_SEC 2.0
-#define SE_DWA_HANDOFF_COMMAND_HOLD_SEC 0.30
-#define SE_DWA_HANDOFF_MOTION_HOLD_SEC 0.25
-#define SE_DWA_HANDOFF_TIMEOUT_SEC 0.60
-#define SE_FRONT_BEARING_DEADBAND 0.05
-/* Keep forward-facing near-corner returns out of lateral gap measurement.
- * abs(y) >= 0.5*abs(x) corresponds to the lateral-facing sectors beyond
- * about 27 degrees from the front/rear axis. */
-#define SE_SIDE_SECTOR_LATERAL_RATIO 0.50
+#define ESC_WBOOST_ENABLE 1
+#define ESC_WBOOS_LIMIT_TICKS 2.0
+#define ESC_WBOOS_STEP 0.05
+#define ESC_TOTAL_LIMIT_TICKS 30.0
+#define ESC_ESCAPE_YAWRATE 0.65
+#define ESC_ESCAPE_MIN_SIDE_CLEARANCE 0.10
+#define ESC_SETTLE_WHEEL_EPS_MPS 0.01
+#define GEAR_REV_TURN_DEAD_RAD 0.10
+
+static int se_side_tri_stop_hit(
+  const se_stop_escape_compensator_t *c,
+  const se_point_t *points,
+  size_t count,
+  int turn_dir,
+  double *gap)
+{
+  const double dx1 = c->front_x - c->rear_x;
+  /* Backup call passes ESC_ESCAPE_MIN_SIDE_CLEARANCE (10cm) here.  The
+   * footrest-front check below separately uses GEAR_REV_SIDE_STOP_GAP_CM
+   * (20cm); these two distances must not be collapsed. */
+  const double th1 = atan2(c->triangle_gap, dx1);
+  const double hyp1 = dx1 / cos(th1);
+  size_t i;
+
+  if (gap != NULL) *gap = 1e9;
+  if (points == NULL || count == 0) return 0;
+  for (i = 0; i < count; ++i) {
+    const double px = points[i].x;
+    const double raw_y = points[i].y;
+    const double y = turn_dir > 0 ? raw_y : -raw_y;
+    double rx;
+    double ry;
+    if (px < c->rear_x || px > c->footrest_front_x) continue;
+    if (y < c->footrest_half_width) continue;
+    if (turn_dir > 0 && raw_y < 0.0) continue;
+    if (turn_dir < 0 && raw_y > 0.0) continue;
+    if (px <= c->front_x && y > c->half_width) {
+      rx = px - c->rear_x;
+      ry = y - c->half_width;
+      if (atan2(ry, rx) <= th1 && sqrt(rx * rx + ry * ry) <= hyp1)
+        return -1;
+    }
+    if (px >= c->front_x && y > c->footrest_half_width) {
+      ry = y - c->footrest_half_width;
+      if (ry < c->stop_gap) return -1;
+    }
+    if (px >= c->front_x && y > c->half_width && gap != NULL &&
+        y < *gap) *gap = y;
+  }
+  return 0;
+}
+
+static void se_decision_reset(se_stop_escape_decision_t *d,
+  const se_stop_escape_compensator_t *c)
+{
+  memset(d, 0, sizeof(*d));
+  d->direction = SE_DIRECTION_NONE;
+  d->left_clearance = c->left_clearance;
+  d->right_clearance = c->right_clearance;
+  d->reason = "conditions_not_met";
+}
 
 void se_stop_escape_compensator_init(
   se_stop_escape_compensator_t *c,
   double stop_hold_sec, double stop_speed, double yawrate,
   double cloud_timeout, double half_width)
 {
+  (void)half_width; /* Backup geometry is fixed by planner_common.h. */
+  memset(c, 0, sizeof(*c));
   c->stop_hold_sec = stop_hold_sec > 0.0 ? stop_hold_sec : 0.0;
-  c->stop_speed = stop_speed > 0.0 ? stop_speed : 0.0;
-  c->yawrate = fabs(yawrate);
-  c->cloud_timeout = cloud_timeout > 0.05 ? cloud_timeout : 0.05;
-  c->half_width = half_width > 0.0 ? half_width : 0.0;
-  c->max_duration_sec = SE_DEFAULT_MAX_DURATION_SEC;
-  c->tie_margin = SE_DEFAULT_TIE_MARGIN > 0.0 ? SE_DEFAULT_TIE_MARGIN : 0.0;
-  c->forward_min_x = SE_DEFAULT_FORWARD_MIN_X;
-  c->forward_max_x = SE_DEFAULT_FORWARD_MAX_X;
-  {
-    double max_lat = SE_DEFAULT_MAX_LATERAL;
-    if (c->half_width > max_lat) max_lat = c->half_width;
-    c->max_lateral = max_lat;
-  }
+  c->stop_speed = stop_speed > 0.0 ? stop_speed : ESC_SETTLE_WHEEL_EPS_MPS;
+  c->yawrate = fabs(yawrate) > 0.0 ? fabs(yawrate) : ESC_ESCAPE_YAWRATE;
+  c->cloud_timeout = cloud_timeout > 0.05 ? cloud_timeout : 0.60;
+  /* Backup planner_common.h: CAR_WIDTH=63cm, CAR_HALF_WID=31.5cm. */
+  c->half_width = 0.315;
+  c->max_duration_sec = 3.0;
+  c->rear_x = -0.14;
+  c->front_x = 0.50;
+  c->footrest_front_x = 0.90;
+  /* Backup dwa_plan_local.h: LEFT_RADAR_Y(28)-BLIND_MAX_JX(9)=19cm;
+   * predictive_side_tri_stop_hit uses 10cm for the rear-body triangle and
+   * GEAR_REV_SIDE_STOP_GAP_CM=20cm for the footrest-front edge. */
+  c->footrest_half_width = 0.19;
+  c->triangle_gap = ESC_ESCAPE_MIN_SIDE_CLEARANCE;
+  c->stop_gap = 0.20;
   c->cloud_time = 0.0;
-  c->left_clearance = INFINITY;
-  c->right_clearance = INFINITY;
-  c->front_obstacle_away_direction = SE_DIRECTION_NONE;
-  c->stop_since = -1.0;
-  c->started_at = -1.0;
-  c->recovery_since = -1.0;
-  c->forward_command_since = -1.0;
-  c->handoff_since = -1.0;
-  c->forward_motion_since = -1.0;
-  c->handoff_active = 0;
-  c->inhibited_until_rearm = 0;
-  c->stop_while_locked_out = 0;
-  c->direction = SE_DIRECTION_NONE;
-  c->last_direction = SE_DIRECTION_NONE;
-  c->active = 0;
+  c->left_clearance = 1e9;
+  c->right_clearance = 1e9;
+  c->escape_yawrate = c->yawrate;
+  se_stop_escape_compensator_reset(c);
 }
 
 void se_stop_escape_compensator_reset(se_stop_escape_compensator_t *c)
 {
-  c->stop_since = -1.0;
-  c->started_at = -1.0;
-  c->recovery_since = -1.0;
-  c->forward_command_since = -1.0;
-  c->handoff_since = -1.0;
-  c->forward_motion_since = -1.0;
-  c->handoff_active = 0;
-  c->inhibited_until_rearm = 0;
-  c->stop_while_locked_out = 0;
-  c->direction = SE_DIRECTION_NONE;
-  c->active = 0;
+  c->total_ticks = 0.0;
+  c->settle_tick = 0.0;
+  c->escape_yawrate = c->yawrate;
+  c->session = 0;
+  c->giveup = 0;
+  c->joy_reset = 0;
 }
 
 void se_stop_escape_compensator_update_cloud(
   se_stop_escape_compensator_t *c, const se_point_t *points, size_t count,
   double now)
 {
-  double left = INFINITY;
-  double right = INFINITY;
-  double nearest_front_left_x = INFINITY;
-  double nearest_front_right_x = INFINITY;
-  size_t i;
-  for (i = 0; i < count; ++i) {
-    const double x = points[i].x;
-    const double y = points[i].y;
-    if (!(isfinite(x) && isfinite(y))) continue;
-    if (x < c->forward_min_x || x > c->forward_max_x) continue;
-    /* For tied side clearances, compare the nearest frontal returns on each
-     * half of the footprint. A >5 cm range skew identifies the nearer side. */
-    if (x >= 0.0 && fabs(y) <= c->half_width) {
-      if (y > SE_FRONT_BEARING_DEADBAND && x < nearest_front_left_x) {
-        nearest_front_left_x = x;
-      } else if (y < -SE_FRONT_BEARING_DEADBAND &&
-        x < nearest_front_right_x)
-      {
-        nearest_front_right_x = x;
-      }
-    }
-    if (fabs(y) > c->max_lateral || fabs(y) <= c->half_width) continue;
-    /* Side clearance is for lateral sectors, not a frontal wall's near-corner
-     * returns. Those points move out of this sector when backing up, which
-     * otherwise makes a wide-open side appear blocked until the chair reverses. */
-    if (fabs(y) < SE_SIDE_SECTOR_LATERAL_RATIO * fabs(x)) continue;
-    {
-      const double clearance = fabs(y) - c->half_width;
-      if (y >= 0.0) left = left < clearance ? left : clearance;
-      else right = right < clearance ? right : clearance;
-    }
-  }
-  c->left_clearance = left;
-  c->right_clearance = right;
-  c->front_obstacle_away_direction = SE_DIRECTION_NONE;
-  if (isfinite(nearest_front_left_x) &&
-    (!isfinite(nearest_front_right_x) ||
-    nearest_front_left_x + SE_FRONT_BEARING_DEADBAND <
-      nearest_front_right_x))
-  {
-    c->front_obstacle_away_direction = SE_DIRECTION_RIGHT;
-  } else if (isfinite(nearest_front_right_x) &&
-    (!isfinite(nearest_front_left_x) ||
-    nearest_front_right_x + SE_FRONT_BEARING_DEADBAND <
-      nearest_front_left_x))
-  {
-    c->front_obstacle_away_direction = SE_DIRECTION_LEFT;
-  }
+  c->left_hit = se_side_tri_stop_hit(c, points, count, 1,
+    &c->left_clearance) == -1;
+  c->right_hit = se_side_tri_stop_hit(c, points, count, -1,
+    &c->right_clearance) == -1;
   c->cloud_time = now;
 }
 
 se_direction_t se_stop_escape_compensator_choose_direction(
   const se_stop_escape_compensator_t *c)
 {
-  const double left = c->left_clearance;
-  const double right = c->right_clearance;
-  const int left_finite = isfinite(left);
-  const int right_finite = isfinite(right);
-  const int left_safe = left_finite && left >= SE_ESCAPE_SIDE_MIN_CLEARANCE;
-  const int right_safe = right_finite && right >= SE_ESCAPE_SIDE_MIN_CLEARANCE;
-
-  if (!left_safe && !right_safe) return SE_DIRECTION_NONE;
-  if (!left_safe) return SE_DIRECTION_RIGHT;
-  if (!right_safe) return SE_DIRECTION_LEFT;
-  if (fabs(left - right) > c->tie_margin) {
-    return (left > right) ? SE_DIRECTION_LEFT : SE_DIRECTION_RIGHT;
+  /* This intentionally preserves the backup version's selection conditions,
+   * including its original right-side comparison semantics. */
+  const int left_stop = c->left_hit ? -1 : 0;
+  const int right_stop = c->right_hit ? -1 : 0;
+  if (left_stop != -1 && right_stop != -1) {
+    return c->left_clearance > c->right_clearance ?
+      SE_DIRECTION_LEFT : SE_DIRECTION_RIGHT;
   }
-  if (c->front_obstacle_away_direction != SE_DIRECTION_NONE) {
-    return c->front_obstacle_away_direction;
-  }
+  if (left_stop != -1) return SE_DIRECTION_LEFT;
+  if (c->right_clearance != -1) return SE_DIRECTION_RIGHT;
   return SE_DIRECTION_NONE;
 }
 
-static void se_stop_escape_inhibit(se_stop_escape_compensator_t *c,
-  int stop_until_rearm)
-{
-  c->stop_since = -1.0;
-  c->started_at = -1.0;
-  c->recovery_since = -1.0;
-  c->forward_command_since = -1.0;
-  c->handoff_since = -1.0;
-  c->forward_motion_since = -1.0;
-  c->handoff_active = 0;
-  c->active = 0;
-  /* Keep selected direction until trigger is released. */
-  c->inhibited_until_rearm = 1;
-  c->stop_while_locked_out = stop_until_rearm;
-}
-
-se_stop_escape_decision_t se_stop_escape_compensator_update_with_turn(
+se_stop_escape_decision_t se_stop_escape_compensator_step(
   se_stop_escape_compensator_t *c,
   double now,
-  int controller_neutral,
-  int forward_intent,
-  int vehicle_stopped,
-  int normal_output_stopped,
-  int positive_dwa_command,
-  int positive_forward_motion,
-  se_direction_t manual_turn_direction)
+  double joy_v,
+  double joy_w,
+  double left_mps,
+  double right_mps,
+  double w_max,
+  int has_path)
 {
   se_stop_escape_decision_t d;
-  const int cloud_fresh = c->cloud_time > 0.0 &&
-    now >= c->cloud_time && now - c->cloud_time <= c->cloud_timeout;
+  int esc_req_dir = 0;
+  int stop_lr;
+  int stop_dir;
 
-  d.active = 0;
-  d.command_enabled = 0;
-  d.yield_to_dwa = 0;
-  d.yawrate = 0.0;
-  d.direction = SE_DIRECTION_NONE;
-  d.left_clearance = c->left_clearance;
-  d.right_clearance = c->right_clearance;
-  d.reason = "";
+  (void)now;
+  se_decision_reset(&d, c);
 
-  /* Explicit user release always cancels immediately. */
-  if (controller_neutral || !forward_intent) {
-    se_stop_escape_compensator_reset(c);
-    d.reason = "conditions_not_met";
-    return d;
-  }
-
-  if (manual_turn_direction != SE_DIRECTION_NONE) {
-    if (c->active || (vehicle_stopped && normal_output_stopped)) {
-      se_stop_escape_inhibit(c, 0);
+  if (has_path) {
+    c->session = 0;
+    c->settle_tick = 0.0;
+    if (fabs(left_mps) > ESC_SETTLE_WHEEL_EPS_MPS ||
+        fabs(right_mps) > ESC_SETTLE_WHEEL_EPS_MPS) {
+      c->total_ticks = 0.0;
+      c->giveup = 0;
+      c->joy_reset = 0;
     }
-    d.direction = manual_turn_direction;
-    d.reason = "manual_turn_takeover";
+    c->escape_yawrate = c->yawrate;
     return d;
   }
 
-  if (c->inhibited_until_rearm) {
-    if (c->stop_while_locked_out) {
-      d.active = 1;
-    }
-    d.direction = c->direction;
-    d.reason = "escape_locked_out";
-    return d;
-  }
-
-  if (c->active) {
-    if (c->max_duration_sec > 0.0 && c->started_at >= 0.0 &&
-        now - c->started_at >= c->max_duration_sec) {
-      d.direction = c->direction;
-      se_stop_escape_inhibit(c, 1);
-      d.active = 1;
-      d.reason = "duration_limit";
+  if (!c->session) {
+    if (fabs(left_mps) > ESC_SETTLE_WHEEL_EPS_MPS ||
+        fabs(right_mps) > ESC_SETTLE_WHEEL_EPS_MPS) {
+      d.reason = "waiting_wheel_settle";
       return d;
     }
-    /* A brief sensing dropout pauses output. The total escape timer continues
-     * to run, so stale perception cannot preserve a maneuver indefinitely. */
-    if (!cloud_fresh) {
-      c->recovery_since = -1.0;
-      d.active = 1;
-      d.direction = c->direction;
-      d.reason = "paused_cloud_stale";
-      return d;
-    }
-    /* Never keep or reverse a latched escape after its selected side becomes
-     * unsafe or unobservable. Stop and require the trigger to clear first. */
-    {
-      const double latched = c->direction == SE_DIRECTION_LEFT ?
-        c->left_clearance : c->right_clearance;
-      if (!isfinite(latched) || latched < SE_ESCAPE_SIDE_MIN_CLEARANCE) {
-        d.direction = c->direction;
-        se_stop_escape_inhibit(c, 1);
-        d.active = 1;
-        d.reason = "selected_side_blocked";
-        return d;
-      }
-    }
+    c->settle_tick = 0.0;
+    c->session = 1;
+  }
 
-    /* Handoff only after a fresh positive DWA command remains available.
-     * During the trial, let the normal DWA output pass through. End the escape
-     * only after measured forward wheel motion is sustained; otherwise resume
-     * the same latched turn without creating a new event. */
-    if (c->handoff_active) {
-      if (!positive_dwa_command) {
-        c->handoff_active = 0;
-        c->handoff_since = -1.0;
-        c->forward_motion_since = -1.0;
-        c->forward_command_since = -1.0;
-      } else {
-        if (positive_forward_motion) {
-          if (c->forward_motion_since < 0.0) c->forward_motion_since = now;
-          if (now - c->forward_motion_since >=
-              SE_DWA_HANDOFF_MOTION_HOLD_SEC) {
-            se_stop_escape_compensator_reset(c);
-            d.reason = "recovered";
-            return d;
-          }
-        } else {
-          c->forward_motion_since = -1.0;
-        }
-        if (now - c->handoff_since < SE_DWA_HANDOFF_TIMEOUT_SEC ||
-            positive_forward_motion) {
-          d.active = 1;
-          d.yield_to_dwa = 1;
-          d.direction = c->direction;
-          d.reason = "handoff_to_dwa";
-          return d;
-        }
-        c->handoff_active = 0;
-        c->handoff_since = -1.0;
-        c->forward_motion_since = -1.0;
-        c->forward_command_since = -1.0;
-      }
-    } else if (positive_dwa_command) {
-      if (c->forward_command_since < 0.0) c->forward_command_since = now;
-      if (now - c->forward_command_since >=
-          SE_DWA_HANDOFF_COMMAND_HOLD_SEC) {
-        c->handoff_active = 1;
-        c->handoff_since = now;
-        c->forward_motion_since = -1.0;
-        d.active = 1;
-        d.yield_to_dwa = 1;
-        d.direction = c->direction;
-        d.reason = "handoff_to_dwa";
-        return d;
-      }
+  if (c->giveup) {
+    if (fabs(joy_v) <= 0.01 && fabs(joy_w) < 0.05) {
+      c->joy_reset = 1;
+    } else if (c->joy_reset && joy_v > 0.01) {
+      c->giveup = 0;
+      c->joy_reset = 0;
+      c->total_ticks = 0.0;
+      c->escape_yawrate = c->yawrate;
+    }
+  } else {
+    c->total_ticks += 1.0;
+    if (c->total_ticks > ESC_TOTAL_LIMIT_TICKS) c->giveup = 1;
+  }
+
+  if (fabs(joy_w) >= GEAR_REV_TURN_DEAD_RAD)
+    esc_req_dir = joy_w > 0.0 ? 1 : -1;
+
+  if (esc_req_dir == 0) {
+    const se_direction_t selected =
+      se_stop_escape_compensator_choose_direction(c);
+    stop_dir = selected == SE_DIRECTION_LEFT ? 1 :
+      (selected == SE_DIRECTION_RIGHT ? -1 : 0);
+  } else {
+    /* Same branch as predictive_escape_step: requested side is accepted only
+     * when predictive_side_tri_stop_hit() did not return -1. */
+    stop_lr = esc_req_dir > 0 ? (c->left_hit ? -1 : 0) :
+      (c->right_hit ? -1 : 0);
+    stop_dir = stop_lr != -1 ? esc_req_dir : 0;
+  }
+
+  if (stop_dir != 0 && !c->giveup) {
+#if ESC_WBOOST_ENABLE
+    if (c->total_ticks >= ESC_WBOOS_LIMIT_TICKS) {
+      c->escape_yawrate += ESC_WBOOS_STEP;
+      if (w_max > 0.0 && c->escape_yawrate > w_max)
+        c->escape_yawrate = w_max;
     } else {
-      c->forward_command_since = -1.0;
+      c->escape_yawrate = c->yawrate;
     }
-
-    c->last_direction = c->direction;
+#endif
     d.active = 1;
     d.command_enabled = 1;
-    d.yawrate = c->direction == SE_DIRECTION_LEFT ? c->yawrate : -c->yawrate;
-    d.direction = c->direction;
-    d.left_clearance = c->left_clearance;
-    d.right_clearance = c->right_clearance;
+    d.yawrate = stop_dir > 0 ? c->escape_yawrate : -c->escape_yawrate;
+    d.direction = stop_dir > 0 ? SE_DIRECTION_LEFT : SE_DIRECTION_RIGHT;
     d.reason = "escaping";
     return d;
   }
-
-  /* Initial activation requires fresh sensing and a confirmed stopped state,
-   * so the fallback cannot take over ordinary movement. */
-  if (!cloud_fresh) {
-    d.reason = "conditions_not_met";
-    return d;
-  }
-  if (!vehicle_stopped || !normal_output_stopped) {
-    c->stop_since = -1.0;
-    c->recovery_since = -1.0;
-    d.reason = "conditions_not_met";
-    return d;
-  }
-
-  if (c->stop_since < 0.0) c->stop_since = now;
-  if (now - c->stop_since < c->stop_hold_sec) {
-    d.reason = "waiting_stop_hold";
-    return d;
-  }
-
-  c->direction = se_stop_escape_compensator_choose_direction(c);
-  if (c->direction == SE_DIRECTION_NONE || c->yawrate <= 0.0) {
-    if (vehicle_stopped && normal_output_stopped) {
-      c->inhibited_until_rearm = 1;
-      c->stop_while_locked_out = 1;
-    }
-    d.reason = "no_safe_side";
-    return d;
-  }
-  c->active = 1;
-  c->started_at = now;
-  c->recovery_since = -1.0;
-  c->last_direction = c->direction;
-  d.active = 1;
-  d.command_enabled = 1;
-  d.yawrate = c->direction == SE_DIRECTION_LEFT ? c->yawrate : -c->yawrate;
-  d.direction = c->direction;
-  d.left_clearance = c->left_clearance;
-  d.right_clearance = c->right_clearance;
-  d.reason = "escaping";
+  d.reason = c->giveup ? "duration_limit" : "no_safe_side";
   return d;
-}
-
-se_stop_escape_decision_t se_stop_escape_compensator_update(
-  se_stop_escape_compensator_t *c,
-  double now,
-  int controller_neutral,
-  int forward_intent,
-  int vehicle_stopped,
-  int normal_output_stopped,
-  int positive_dwa_command,
-  int positive_forward_motion)
-{
-  return se_stop_escape_compensator_update_with_turn(c, now,
-    controller_neutral, forward_intent, vehicle_stopped,
-    normal_output_stopped, positive_dwa_command, positive_forward_motion,
-    SE_DIRECTION_NONE);
 }
 
 double se_stop_escape_compensator_left_clearance(

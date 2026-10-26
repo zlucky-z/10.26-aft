@@ -428,11 +428,9 @@ static void publish_hall_speed_control(
   message.data[5] = (float)node->output_effective_gear;
   message.data[6] = node->output_gear_closed_loop_active ? 1.0f : 0.0f;
   message.data[7] = hard_stop ? 1.0f : 0.0f;
-  message.escape_request = node->escape_request_pending ? 1 : 0;
   if (node->cmd_sink != NULL) {
     node->cmd_sink(node->cmd_sink_user_data, &node->last_published_cmd, &message);
   }
-  node->escape_request_pending = false;
 }
 
 /* publish_regular_command(output, ...) 直译。 */
@@ -522,16 +520,6 @@ static const char *manual_turn_direction_name(
 }
 
 /* ---------- 硬停止脱困状态 ---------- */
-
-/* reset_hard_stop_escape_state() 直译。 */
-static void reset_hard_stop_escape_state(dwa_node_t *node)
-{
-  node->hard_stop_escape_eval_cycles = 0;
-  node->hard_stop_escape_direction = PLANNER_TURN_NONE;
-  node->hard_stop_escape_last_active_tick = 0;
-  node->hard_stop_escape_started_sec = (double)NAN;
-  node->hard_stop_escape_direction_latched_sec = (double)NAN;
-}
 
 /* limit_near_obstacle_yawrate(yawrate, nearby_obstacle) 直译。 */
 static float limit_near_obstacle_yawrate(
@@ -652,7 +640,6 @@ bool dns_handle_manual_bypass(
   if (dwa_manual_command_is_neutral(raw_intent, p->deadband_linear,
       p->deadband_angular))
   {
-    reset_hard_stop_escape_state(node);
   }
   if (dwa_manual_command_is_neutral(raw_intent, p->deadband_linear,
       p->deadband_angular))

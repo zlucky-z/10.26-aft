@@ -239,14 +239,6 @@ typedef struct {
   float side_hard_stop_sweep_prediction_sec, side_hard_stop_sweep_brake_sec;
   float side_hard_stop_sweep_min_yawrate;
 
-  /* ---- 前方硬停/脱困 ---- */
-  bool front_hard_stop_escape_enabled;
-  float radar_contact_distance;
-  int hard_stop_release_clear_cycles;
-  float front_hard_stop_escape_min_clearance;
-  float front_hard_stop_escape_linear_speed;
-  float front_hard_stop_escape_yawrate;
-  float stop_escape_trigger_sec;
   bool near_obstacle_yawrate_limit_enabled;
   float near_obstacle_max_yawrate;
 

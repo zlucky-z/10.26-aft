@@ -250,13 +250,6 @@ void dwa_planner_params_defaults(dwa_planner_params_t *p)
   p->side_hard_stop_sweep_brake_sec = 0.25f;
   p->side_hard_stop_sweep_min_yawrate = 0.15f;
 
-  p->front_hard_stop_escape_enabled = true;
-  p->radar_contact_distance = 0.065f;
-  p->hard_stop_release_clear_cycles = 3;
-  p->front_hard_stop_escape_min_clearance = 0.10f;
-  p->front_hard_stop_escape_linear_speed = 0.04f;
-  p->front_hard_stop_escape_yawrate = 0.30f;
-  p->stop_escape_trigger_sec = 1.0f;
   p->near_obstacle_yawrate_limit_enabled = true;
   p->near_obstacle_max_yawrate = 0.70f;
 
@@ -620,13 +613,6 @@ int dwa_planner_params_load(const char *yaml_path, dwa_planner_params_t *p)
   p->side_hard_stop_sweep_brake_sec = dwa_yaml_get_double(d, "side_hard_stop_sweep_brake_sec", p->side_hard_stop_sweep_brake_sec);
   p->side_hard_stop_sweep_min_yawrate = dwa_yaml_get_double(d, "side_hard_stop_sweep_min_yawrate", p->side_hard_stop_sweep_min_yawrate);
 
-  p->front_hard_stop_escape_enabled = dwa_yaml_get_bool(d, "front_hard_stop_escape_enabled", p->front_hard_stop_escape_enabled);
-  p->radar_contact_distance = dwa_yaml_get_double(d, "radar_contact_distance", p->radar_contact_distance);
-  p->hard_stop_release_clear_cycles = dwa_yaml_get_int(d, "hard_stop_release_clear_cycles", p->hard_stop_release_clear_cycles);
-  p->front_hard_stop_escape_min_clearance = dwa_yaml_get_double(d, "front_hard_stop_escape_min_clearance", p->front_hard_stop_escape_min_clearance);
-  p->front_hard_stop_escape_linear_speed = dwa_yaml_get_double(d, "front_hard_stop_escape_linear_speed", p->front_hard_stop_escape_linear_speed);
-  p->front_hard_stop_escape_yawrate = dwa_yaml_get_double(d, "front_hard_stop_escape_yawrate", p->front_hard_stop_escape_yawrate);
-  p->stop_escape_trigger_sec = dwa_yaml_get_double(d, "stop_escape_trigger_sec", p->stop_escape_trigger_sec);
   p->near_obstacle_yawrate_limit_enabled = dwa_yaml_get_bool(d, "near_obstacle_yawrate_limit_enabled", p->near_obstacle_yawrate_limit_enabled);
 
   p->dwa_velocity_ramp_enabled = dwa_yaml_get_bool(d, "dwa_velocity_ramp_enabled", p->dwa_velocity_ramp_enabled);

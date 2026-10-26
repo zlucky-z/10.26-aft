@@ -59,7 +59,6 @@ static inline void dwa_twist_reset(dwa_twist_t *t)
 typedef struct {
   /* Internal callback metadata; not serialized to the controller. */
   float data[8];
-  int escape_request;
 } dwa_hall_speed_control_msg_t;
 
 /*
@@ -161,18 +160,10 @@ typedef struct {
   bool moving_dwa_command_published;
   bool hard_stop_latched;
   int hard_stop_clear_cycles;
-  float hard_stop_escape_started_sec; /* NaN = 未激活 */
-  int hard_stop_escape_eval_cycles;
-  planner_manual_turn_direction_t hard_stop_escape_direction;
-  uint64_t hard_stop_escape_last_active_tick;
   /* 脱困事件统计：按一次连续脱困过程计数，不按控制周期重复计数。 */
   uint64_t no_valid_escape_event_count;
   uint64_t no_valid_escape_last_tick;
-  uint64_t hard_stop_escape_event_count;
-  uint64_t hard_stop_escape_event_last_tick;
-  bool escape_request_pending;
   /* 9.28 Fix I：方向锁定时刻（滞回窗口起点），NaN = 未锁定 */
-  float hard_stop_escape_direction_latched_sec;
   bool near_obstacle_gear_latched;
   float near_obstacle_gear_nearest_distance;
   float stationary_turn_ring_speed_limit_mps;

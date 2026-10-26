@@ -55,32 +55,6 @@ planner_manual_turn_direction_t dwa_manual_turn_direction_with_reverse(
   const dwa_turn_classification_config_t *config,
   float *angle_deg);
 
-typedef struct {
-  bool allowed;
-  planner_manual_turn_direction_t direction;
-} dwa_front_escape_decision_t;
-
-/* FrontEscapeDecision{} 默认值直译。 */
-static inline dwa_front_escape_decision_t dwa_front_escape_decision_default(void)
-{
-  dwa_front_escape_decision_t decision;
-  decision.allowed = false;
-  decision.direction = PLANNER_TURN_NONE;
-  return decision;
-}
-
-/* choose_hard_stop_escape_direction(clearance, enabled, threshold) 直译。 */
-dwa_front_escape_decision_t dwa_choose_hard_stop_escape_direction(
-  const planner_side_clearance_diagnostics_t *clearance,
-  bool enabled,
-  float blocked_clearance_threshold);
-
-/* choose_front_escape_direction（旧接口名，语义已统一）直译。 */
-dwa_front_escape_decision_t dwa_choose_front_escape_direction(
-  const planner_side_clearance_diagnostics_t *clearance,
-  bool enabled,
-  float minimum_clearance);
-
 #ifdef __cplusplus
 }
 #endif

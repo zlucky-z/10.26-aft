@@ -90,7 +90,7 @@ int main(int argc, char **argv)
   expect_double("max_reverse_velocity", params.max_reverse_velocity, 0.70);
   expect_double("max_yawrate", params.max_yawrate, 1.40);
   expect_double("min_yawrate", params.min_yawrate, 0.05);
-  expect_double("max_acceleration", params.max_acceleration, 1.50); /* G2(10.09)：1.00→1.50 */
+  expect_double("max_acceleration", params.max_acceleration, 3.00);
   expect_double("max_deceleration", params.max_deceleration, 1.50);
   /* G1(10.09)：yaml 新增采样窗口下界专用减速度 3.00（<=0 退回 max_deceleration） */
   expect_double("sampling_deceleration_window", params.sampling_deceleration_window, 3.00);
@@ -159,9 +159,6 @@ int main(int argc, char **argv)
   expect_int("side_hard_stop_triangle_enabled", params.side_hard_stop_triangle_enabled, 1);
   expect_double("side_hard_stop_triangle_gap_m", params.side_hard_stop_triangle_gap_m, 0.20);
   expect_double("side_hard_stop_circle_radius", params.side_hard_stop_circle_radius, 0.50);
-  expect_double("front_hard_stop_escape_linear_speed", params.front_hard_stop_escape_linear_speed, 0.00);
-  expect_double("front_hard_stop_escape_yawrate", params.front_hard_stop_escape_yawrate, 0.50);
-  expect_double("stop_escape_trigger_sec", params.stop_escape_trigger_sec, 0.00);
   expect_double("side_wall_hold_min_yawrate", params.side_wall_hold_min_yawrate, 0.04);
   expect_double("front_corridor_width", params.front_corridor_width, 0.59);
   expect_double("front_trigger_base_width", params.front_trigger_base_width, 0.59);
@@ -206,8 +203,6 @@ int main(int argc, char **argv)
   expect_int("default grid_unknown_is_obstacle", defaults.grid_unknown_is_obstacle, 1);
   expect_double("default front_trigger_start_x", defaults.front_trigger_start_x, 0.48);
   expect_double("default front_corridor_width", defaults.front_corridor_width, 0.59);
-  expect_double("default stop_escape_trigger_sec", defaults.stop_escape_trigger_sec, 1.0);
-  expect_double("default front_hard_stop_escape_yawrate", defaults.front_hard_stop_escape_yawrate, 0.30);
   expect_int("yaml near_obstacle_yawrate_limit_enabled", params.near_obstacle_yawrate_limit_enabled, 0);
   expect_double("default near_obstacle_max_yawrate", defaults.near_obstacle_max_yawrate, 0.70);
   expect_int("default near_obstacle_yawrate_limit_enabled", defaults.near_obstacle_yawrate_limit_enabled, 1);

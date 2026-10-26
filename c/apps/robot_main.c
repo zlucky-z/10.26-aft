@@ -30,8 +30,8 @@
  *   /odom                               → 生产链路无发布者，不注入（同现状）
  *   IMU                                 → 生产桥无 imu 订阅，不注入（同现状）
  *
- * 打印格式对齐 9.20 基线包（ltw_dwa robot_main.c）：
- *   [路径规划] / [通道] / [循环计时] / 正前方距离 —— 便于与基线日志对照。
+ * 诊断输出：控制链路写入结构化 CSV，融合点云写入带序号的二进制帧，
+ * 避免高频人类汇总文本掩盖决策与最终电机帧之间的对应关系。
  *
  * 安全：雷达数据就绪前不开电机串口（对齐生产"桥最后启动"原则）；
  * mb 串口带 flock——若 ROS 流水线仍在跑会打开失败并退出，杜绝双驱。
@@ -161,14 +161,12 @@ typedef enum {
   RM_EV_SCAN_L,
   RM_EV_SCAN_R,
   RM_EV_ESCAPE,
-  RM_EV_ESCAPE_REQUEST,
   RM_EV_ESCAPE_IMU
 } rm_ev_type_t;
 
 typedef struct {
   rm_ev_type_t type;
   double linear_x, angular_z;
-  int escape_request;
   int imu_valid;
   float hall[8];
 } rm_event_t;
@@ -193,7 +191,44 @@ static int g_debug_cloud = 0;
  * 按 soft-point UDP 协议发给已连接的 DCJProject 可视化工具。 */
 static int g_udp_point_debug = 0;
 static int g_udp_point_ready = 0;
-static double g_last_dwa_chain_diag_time = 0.0;
+
+/* Runtime traces.  The binary cloud trace stores exactly the point array fed
+ * to dwa_node_on_fused_cloud(), including the safety-only flags, so command
+ * decisions can be replayed against the same cloud instead of a later UDP
+ * snapshot. */
+#define RM_CLOUD_TRACE_MAGIC 0x524d434cU /* "RMCL" */
+#define RM_CLOUD_TRACE_VERSION 1U
+#define RM_CLOUD_TRACE_DEFAULT_MAX_MB 32U
+
+typedef struct __attribute__((packed)) {
+  uint32_t magic;
+  uint16_t version;
+  uint16_t point_size;
+  uint64_t sequence;
+  uint64_t monotonic_us;
+  uint64_t wall_us;
+  uint32_t primary_count;
+  uint32_t total_count;
+} rm_cloud_trace_header_t;
+
+typedef struct __attribute__((packed)) {
+  float x;
+  float y;
+  uint8_t source;
+  uint8_t flags; /* bit0=side_safety_only, bit1=front_safety_only */
+  uint8_t reserved[2];
+} rm_cloud_trace_point_t;
+
+static FILE *g_cloud_trace = NULL;
+static FILE *g_control_trace = NULL;
+static char g_cloud_trace_path[512];
+static size_t g_cloud_trace_max_bytes = RM_CLOUD_TRACE_DEFAULT_MAX_MB * 1024U * 1024U;
+static size_t g_cloud_trace_bytes = 0;
+static uint64_t g_cloud_sequence = 0;
+static double g_cloud_last_mono = 0.0;
+static uint64_t g_cloud_last_wall_us = 0;
+static size_t g_cloud_last_primary_count = 0;
+static size_t g_cloud_last_total_count = 0;
 
 /* ============================ 小工具 ============================ */
 
@@ -202,6 +237,159 @@ static double rm_now_sec(void)
   struct timeval tv;
   gettimeofday(&tv, NULL);
   return (double)tv.tv_sec + (double)tv.tv_usec * 1e-6;
+}
+
+static uint64_t rm_wall_us(void)
+{
+  struct timeval tv;
+  gettimeofday(&tv, NULL);
+  return (uint64_t)tv.tv_sec * 1000000ULL + (uint64_t)tv.tv_usec;
+}
+
+static size_t rm_trace_max_bytes(void)
+{
+  const char *value = getenv("RM_POINTCLOUD_TRACE_MAX_MB");
+  char *end = NULL;
+  unsigned long mb;
+  if (value == NULL || *value == '\0') {
+    return RM_CLOUD_TRACE_DEFAULT_MAX_MB * 1024U * 1024U;
+  }
+  mb = strtoul(value, &end, 10);
+  if (end == value || *end != '\0' || mb == 0UL || mb > 1024UL) {
+    return RM_CLOUD_TRACE_DEFAULT_MAX_MB * 1024U * 1024U;
+  }
+  return (size_t)mb * 1024U * 1024U;
+}
+
+static void rm_open_runtime_traces(void)
+{
+  const char *cloud_path = getenv("RM_POINTCLOUD_TRACE");
+  const char *control_path = getenv("RM_CONTROL_TRACE");
+
+  g_cloud_trace_max_bytes = rm_trace_max_bytes();
+  if (cloud_path != NULL && *cloud_path != '\0') {
+    strncpy(g_cloud_trace_path, cloud_path, sizeof(g_cloud_trace_path) - 1);
+    g_cloud_trace_path[sizeof(g_cloud_trace_path) - 1] = '\0';
+    g_cloud_trace = fopen(g_cloud_trace_path, "wb");
+    if (g_cloud_trace == NULL) {
+      fprintf(stderr, "[trace] 无法打开点云文件: %s\n", g_cloud_trace_path);
+    }
+  }
+  if (control_path != NULL && *control_path != '\0') {
+    g_control_trace = fopen(control_path, "w");
+    if (g_control_trace == NULL) {
+      fprintf(stderr, "[trace] 无法打开控制链路文件: %s\n", control_path);
+    } else {
+      fprintf(g_control_trace,
+        "tick,mono_sec,wall_us,cloud_seq,cloud_mono_sec,cloud_age_sec,"
+        "cloud_primary,cloud_total,published,intent_v,intent_w,raw_v,raw_w,"
+        "selected_v,selected_w,published_v,published_w,path,valid,takeover,"
+        "front,left,right,escape_active,escape_events,escape_yaw,escape_reason,"
+        "tick_wall_us,tick_cpu_us\n");
+      fflush(g_control_trace);
+    }
+  }
+}
+
+static void rm_close_runtime_traces(void)
+{
+  if (g_cloud_trace != NULL) {
+    fflush(g_cloud_trace);
+    fclose(g_cloud_trace);
+    g_cloud_trace = NULL;
+  }
+  if (g_control_trace != NULL) {
+    fflush(g_control_trace);
+    fclose(g_control_trace);
+    g_control_trace = NULL;
+  }
+}
+
+static void rm_rotate_cloud_trace(void)
+{
+  char rotated[sizeof(g_cloud_trace_path) + 8];
+  if (g_cloud_trace == NULL || g_cloud_trace_path[0] == '\0') return;
+  fclose(g_cloud_trace);
+  g_cloud_trace = NULL;
+  snprintf(rotated, sizeof(rotated), "%s.1", g_cloud_trace_path);
+  (void)remove(rotated);
+  (void)rename(g_cloud_trace_path, rotated);
+  g_cloud_trace = fopen(g_cloud_trace_path, "wb");
+  g_cloud_trace_bytes = 0;
+}
+
+static void rm_save_fused_cloud_trace(
+  const dwa_fused_base_point_t *points, size_t primary_count, size_t count)
+{
+  rm_cloud_trace_header_t header;
+  size_t i;
+  const size_t record_bytes = sizeof(header) + count * sizeof(rm_cloud_trace_point_t);
+
+  if (g_cloud_trace == NULL || points == NULL || count == 0) return;
+  if (g_cloud_trace_bytes > 0 &&
+      g_cloud_trace_bytes + record_bytes > g_cloud_trace_max_bytes) {
+    rm_rotate_cloud_trace();
+    if (g_cloud_trace == NULL) return;
+  }
+  memset(&header, 0, sizeof(header));
+  header.magic = RM_CLOUD_TRACE_MAGIC;
+  header.version = RM_CLOUD_TRACE_VERSION;
+  header.point_size = (uint16_t)sizeof(rm_cloud_trace_point_t);
+  header.sequence = g_cloud_sequence;
+  header.monotonic_us = (uint64_t)(g_cloud_last_mono * 1000000.0);
+  header.wall_us = g_cloud_last_wall_us;
+  header.primary_count = (uint32_t)primary_count;
+  header.total_count = (uint32_t)count;
+  if (fwrite(&header, sizeof(header), 1, g_cloud_trace) != 1) return;
+  for (i = 0; i < count; ++i) {
+    rm_cloud_trace_point_t item;
+    memset(&item, 0, sizeof(item));
+    item.x = points[i].point.x;
+    item.y = points[i].point.y;
+    item.source = points[i].is_left ? 0U : 1U;
+    item.flags = (uint8_t)((points[i].side_safety_only ? 1U : 0U) |
+      (points[i].front_safety_only ? 2U : 0U));
+    if (fwrite(&item, sizeof(item), 1, g_cloud_trace) != 1) return;
+  }
+  g_cloud_trace_bytes += record_bytes;
+  g_cloud_last_primary_count = primary_count;
+  g_cloud_last_total_count = count;
+  fflush(g_cloud_trace);
+}
+
+static void rm_write_control_trace(const dwa_velocity_t *intent,
+  int published, double tick_wall_us, double tick_cpu_us)
+{
+  const double now = hal_steady_now_sec();
+  const double cloud_age = g_cloud_last_mono > 0.0
+    ? now - g_cloud_last_mono : -1.0;
+  const char *escape_reason =
+    (g_bridge.stop_escape_last_decision.reason != NULL) ?
+      g_bridge.stop_escape_last_decision.reason : "";
+
+  if (g_control_trace == NULL || intent == NULL) return;
+  fprintf(g_control_trace,
+    "%llu,%.6f,%llu,%llu,%.6f,%.6f,%zu,%zu,%d,%.6f,%.6f,%.6f,%.6f,"
+    "%.6f,%.6f,%.6f,%.6f,%s,%d,%d,%.6f,%.6f,%.6f,%d,%llu,%.6f,%s,"
+    "%.0f,%.0f\n",
+    (unsigned long long)g_node.tick_count, now,
+    (unsigned long long)rm_wall_us(),
+    (unsigned long long)g_cloud_sequence, g_cloud_last_mono, cloud_age,
+    g_cloud_last_primary_count, g_cloud_last_total_count, published,
+    (double)intent->v, (double)intent->w,
+    (double)g_node.diag_raw_dwa_v, (double)g_node.diag_raw_dwa_w,
+    (double)g_node.diag_selected_v, (double)g_node.diag_selected_w,
+    (double)g_node.last_published_cmd.linear_x,
+    (double)g_node.last_published_cmd.angular_z,
+    g_node.diag_path != NULL ? g_node.diag_path : "", g_node.diag_valid_count,
+    g_node.diag_takeover, (double)g_node.front_unclipped_clearance_this_tick,
+    (double)g_node.diag_side_clear_left,
+    (double)g_node.diag_side_clear_right,
+    g_bridge.stop_escape_last_decision.active ? 1 : 0,
+    (unsigned long long)g_bridge.stop_escape_event_count,
+    g_bridge.stop_escape_last_decision.yawrate, escape_reason,
+    tick_wall_us, tick_cpu_us);
+  fflush(g_control_trace);
 }
 
 static void rm_sleep_ms(double ms)
@@ -478,6 +666,16 @@ static void rm_fuse(void)
   }
   g_fwd_gap = rm_front_gap(g_fused, g_fused_count);
 
+  /* Save the exact array handed to DWA, not the pre-self-filter UDP view. */
+  g_cloud_sequence += 1;
+  g_cloud_last_mono = hal_steady_now_sec();
+  g_cloud_last_wall_us = rm_wall_us();
+  g_cloud_last_primary_count = g_fused_count;
+  g_cloud_last_total_count =
+    g_fused_count + g_side_flank_count + g_front_safety_candidate_count;
+  rm_save_fused_cloud_trace(g_base_points, g_fused_count,
+    g_cloud_last_total_count);
+
   if (g_debug_cloud) {
     static unsigned fuse_seq = 0;
     if ((fuse_seq++ % 20) == 0) {
@@ -661,9 +859,6 @@ static void rm_drain_bridge_events(void)
       break;
     case RM_EV_SCAN_R:
       mb_on_right_scan(&g_bridge);
-      break;
-    case RM_EV_ESCAPE_REQUEST:
-      mb_on_escape_request(&g_bridge, ev.escape_request);
       break;
     case RM_EV_ESCAPE_IMU:
       mb_on_escape_imu_yawrate(&g_bridge, ev.angular_z, ev.imu_valid);
@@ -895,10 +1090,6 @@ static void rm_cmd_sink(void *user, const dwa_twist_t *cmd,
   memcpy(ev.hall, hall_control->data, sizeof(ev.hall));
   rm_post_event(&ev);
 
-  memset(&ev, 0, sizeof(ev));
-  ev.type = RM_EV_ESCAPE_REQUEST;
-  ev.escape_request = hall_control->escape_request;
-  rm_post_event(&ev);
 }
 
 /* ============================ 信号 ============================ */
@@ -977,8 +1168,9 @@ static int rm_build_bridge_argv(const char *motor_port, int dry_run,
     "--wheel-track-m", "0.50",
     "--wheel-yaw-max-dt", "0.15",
     "--escape-stop-hold-sec", "0.0",
+    "--escape-turn-yawrate", "0.65",
     "--escape-half-width", "0.295",
-    "--escape-max-duration-sec", "2.0",
+    "--escape-max-duration-sec", "3.0",
     "--no-controller-require-neutral",
     /* 9.27 去掉干预路径角速度 slew：默认 0.9 rad/s²（每 0.1s 周期 w 最多
      * 变 0.09，0→1.4 需 1.55s），且只在 DWA 避障干预写帧时生效——实测
@@ -1099,6 +1291,7 @@ int main(int argc, char **argv)
       g_udp_point_debug = 0;
     }
   }
+  rm_open_runtime_traces();
 
   /* 生产 -p 覆盖（start_dwa_motor_test.sh 的 DWA 节点参数）。 */
   params.max_reverse_velocity = 0.70f;
@@ -1242,123 +1435,13 @@ int main(int argc, char **argv)
     if (published && g_yf_applied) {
       g_node.last_published_cmd.angular_z = g_yf_last_w;
     }
-    if (rm_now_sec() - g_last_dwa_chain_diag_time >= 1.0 ||
-        g_last_dwa_chain_diag_time == 0.0) {
-      hal_log(HAL_LOG_INFO,
-        "dwa_chain mono=%.3f tick=%llu pub=%d intent=(%.3f,%+.3f) raw=(%.3f,%+.3f) selected=(%.3f,%+.3f) published=(%.3f,%+.3f) path=%s mode=%s valid=%d takeover=%d hard_latch=%d escape_pending=%d front=%.3f side=(%.3f,%.3f) candidates=%zu hits=%zu",
-        hal_steady_now_sec(), (unsigned long long)g_node.tick_count,
-        published ? 1 : 0, (double)intent.v, (double)intent.w,
-        (double)g_node.diag_raw_dwa_v, (double)g_node.diag_raw_dwa_w,
-        (double)g_node.diag_selected_v, (double)g_node.diag_selected_w,
-        (double)g_node.last_published_cmd.linear_x,
-        (double)g_node.last_published_cmd.angular_z,
-        g_node.diag_path,
-        dwa_dynamic_control_mode_name(
-          (dwa_dynamic_control_mode_t)g_node.diag_mode),
-        g_node.diag_valid_count, g_node.diag_takeover,
-        g_node.hard_stop_latched ? 1 : 0,
-        g_node.escape_request_pending ? 1 : 0,
-        (double)g_node.front_unclipped_clearance_this_tick,
-        (double)g_node.diag_side_clear_left,
-        (double)g_node.diag_side_clear_right,
-        g_node.front_safety_candidates_this_tick,
-        g_node.front_safety_hits_this_tick);
-      g_last_dwa_chain_diag_time = rm_now_sec();
-    }
-    if (published) {
-      const float theta_joy_rad =
-        dwa_node_joystick_forward_angle_deg(&g_node, &intent) *
-        (float)M_PI / 180.0f;
-      const planner_motor_feedback_snapshot_t fb =
-        dwa_node_motor_feedback_snapshot(&g_node);
-      const float v_cm = g_node.last_published_cmd.linear_x * 100.0f;
-      const float w_out = g_node.last_published_cmd.angular_z;
-      const float fbL = fb.left_mps * 100.0f;
-      const float fbR = fb.right_mps * 100.0f;
-      const float wfb =
-        (fb.right_mps - fb.left_mps) / RM_WHEEL_TRACK_M;
-
-      printf(" 正前方距离 = %f\n", g_fwd_gap);
-      printf("[路径规划] v=%f w=%f (θ_joy=%f rad  fwd=%f m  fbL=%f fbR=%f"
-        "  gyroz=%f wfb=%f src=%c)\n",
-        (double)v_cm, (double)w_out, (double)theta_joy_rad, g_fwd_gap,
-        (double)fbL, (double)fbR, (double)g_gz_filt, (double)wfb, 'W');
-      printf("[通道] active=%d geo=%d pref=%d det=%d held=%d"
-        " reason=%s stab=%d lost=%d clu=%d raw=%d blk=%d"
-        " rjW=%d rjH=%d rjD=%d rjB=%d"
-        " target_y=%.1f th=%.2f\n",
-        g_node.corridor_guide.active ? 1 : 0,
-        g_node.geometric_selector.filtered_target_valid ? 1 : 0,
-        g_node.geometric_selector.tracking_active ? 1 : 0,
-        g_node.corridor_guide.last_guidance.detected ? 1 : 0,
-        g_node.corridor_guide.last_guidance.held ? 1 : 0,
-        g_node.corridor_guide.last_guidance.reason != NULL
-          ? g_node.corridor_guide.last_guidance.reason : "",
-        g_node.corridor_guide.last_guidance.stable_cycles,
-        g_node.corridor_guide.last_guidance.lost_cycles,
-        g_node.corridor_guide.last_guidance.cluster_count,
-        g_node.corridor_guide.last_guidance.raw_gate_count,
-        g_node.corridor_guide.last_guidance.blocked_gate_count,
-        g_node.corridor_guide.last_guidance.reject_width,
-        g_node.corridor_guide.last_guidance.reject_heading,
-        g_node.corridor_guide.last_guidance.reject_depth,
-        g_node.corridor_guide.last_guidance.reject_blocked,
-        (double)(g_node.corridor_guide.active_path.target_y * 100.0f),
-        (double)g_node.corridor_guide.active_path.target_heading);
-    }
-
-    /* P9 链路诊断（无条件每周期）：raw=评分选中的原始 DWA v/w；
-     * sel=几何选择器改写后；[路径规划] 行的 v/w=最终发布（钳制后）。
-     * 对比三者即可定位哪条策略改写了指令：
-     *  采样上限=规划 config.max_velocity（接管圈=F1b 跟 runtime）；
-     *  距离目标=runtime_max_velocity（旁路=max(基线,霍尔实速)）；
-     *  窗心=DWA 动态窗口中心（v/w 各自 ±max_*×control_period）；
-     *  意图=控制器指令（read_intent 已钳 ±forward_speed_limit，只作
-     *  方向参考；F3 反向偏转排查用）；
-     *  带内/墙闸=骑乘过滤带点数与宽簇墙闸（F3）；
-     *  前净距=V4d(10.08) 未截断前向净距（F1d 实际消费值，obstacle_
-     *  range 截断之前的楔形区最小净距；inf=本周期前方无命中）；
-     *  路径=本周期发布链路（final/hand_safe/direct_ctrl/no_takeover/
-     *  hard_stop/manual_bypass/cloud_stale/pub_fail/planned）。 */
-    printf("[DWA链路] raw(v=%.3f,w=%+.3f) sel(v=%.3f,w=%+.3f) "
-      "采样上限=%.3f 距离目标=%.3f 窗心(v=%.3f,w=%+.3f) 意图(v=%.3f,w=%+.3f)"
-      " 接管=%d 模式=%s 有效=%d 带内=%zu 墙闸=%d 侧点=%zu "
-      "侧净距(L=%.2f,R=%.2f) 前净距=%.2f 软避障延迟=%d@%.2fm"
-      " 前安候选=%zu命中=%zu 路径=%s"
-      " 脱困统计(dwa_no_valid=%llu,dwa_hard_stop=%llu,motor_bridge=%llu)"
-      " IMU(gz=%+.2f,ok=%d,wm=%+.2f,ic=%+.2f,fy=%d,app=%d)\n",
-      (double)g_node.diag_raw_dwa_v, (double)g_node.diag_raw_dwa_w,
-      (double)g_node.diag_selected_v, (double)g_node.diag_selected_w,
-      (double)g_node.diag_planning_cap, (double)g_node.diag_runtime_max,
-      (double)g_node.diag_center_v, (double)g_node.diag_center_w,
-      (double)intent.v, (double)intent.w,
-      g_node.diag_takeover,
-      dwa_dynamic_control_mode_name(
-        (dwa_dynamic_control_mode_t)g_node.diag_mode),
-      g_node.diag_valid_count,
-      g_node.rider_band_points_this_tick,
-      g_node.rider_band_wall_gate_this_tick ? 1 : 0,
-      g_node.side_flank_points_this_tick,
-      (double)g_node.diag_side_clear_left,
-      (double)g_node.diag_side_clear_right,
-      (double)g_node.front_unclipped_clearance_this_tick, /* V4d 前净距 */
-      g_node.diag_front_turn_bias_active,
-      (double)g_node.diag_front_turn_bias_clearance,
-      g_node.front_safety_candidates_this_tick,
-      g_node.front_safety_hits_this_tick,
-      g_node.diag_path,
-      (unsigned long long)g_node.no_valid_escape_event_count,
-      (unsigned long long)g_node.hard_stop_escape_event_count,
-      (unsigned long long)g_bridge.stop_escape_event_count,
-      (double)g_gz_filt, g_imu_ok, (double)g_w_meas,
-      (double)g_yf_diag.w_integ, g_yf_diag.fighting, g_yf_applied);
+    rm_write_control_trace(&intent, published, (double)tick_wall_us,
+      (double)tick_cpu_us);
 
     gettimeofday(&tv_end, NULL);
     loop_us = (tv_end.tv_sec - tv_start.tv_sec) * 1000000L +
       (tv_end.tv_usec - tv_start.tv_usec);
     print_us = loop_us - tick_wall_us;
-    printf("[循环计时] 本圈耗时 = %ld us (%.2f ms)\n",
-      loop_us, (double)loop_us / 1000.0);
     /* 毛刺自动定位：tick 墙钟 vs tick 线程 CPU（差=被调度/锁等待）
      * vs 打印段。loop>20ms 时输出（P9 排障）。 */
     if (loop_us > 20000) {
@@ -1382,6 +1465,7 @@ int main(int argc, char **argv)
   if (g_bridge_inited) {
     mb_bridge_destroy(&g_bridge);
   }
+  rm_close_runtime_traces();
   dwa_node_destroy(&g_node);
   printf("[robot_main] 已退出\n");
   rm_exit(0); /* 跳过静态析构（SDK detached 读线程仍在跑） */

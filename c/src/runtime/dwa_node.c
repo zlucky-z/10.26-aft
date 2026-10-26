@@ -319,11 +319,6 @@ int dwa_node_init(dwa_node_t *node, const dwa_planner_params_t *params)
   node->moving_dwa_command_published = false;
   node->hard_stop_latched = false;
   node->hard_stop_clear_cycles = 0;
-  node->hard_stop_escape_started_sec = (double)NAN;
-  node->hard_stop_escape_eval_cycles = 0;
-  node->hard_stop_escape_direction = PLANNER_TURN_NONE;
-  node->hard_stop_escape_last_active_tick = 0;
-  node->hard_stop_escape_direction_latched_sec = (double)NAN;
   node->near_obstacle_gear_latched = false;
   node->near_obstacle_gear_nearest_distance = (float)INFINITY;
   node->stationary_turn_ring_speed_limit_mps = (float)INFINITY;
